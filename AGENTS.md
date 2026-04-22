@@ -77,3 +77,28 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 
 ### After Any Code Change
 **Always run the full test suite** before considering a task complete. If tests fail, fix the code or update tests if the behavior change is intentional. Never leave the test suite failing.
+
+## Commit Conventions
+
+All commits **must** follow the [Conventional Commits](https://www.conventionalcommits.org/) format (semantic commits):
+
+```
+<type>: <description>
+```
+
+Common types used in this project:
+- `feat:` — new feature or behavior
+- `fix:` — bug fix
+- `docs:` — documentation-only changes
+- `test:` — adding or updating tests
+- `refactor:` — code change that neither fixes a bug nor adds a feature
+- `chore:` — tooling, dependency updates, or other maintenance
+
+Examples:
+```
+feat: add heartbeat rate limiting to socket events
+fix: prevent PO from submitting estimates
+ docs: document TRUST_PROXY runtime opt-in
+```
+
+**Do not** create commits without a semantic prefix. If unsure, default to `chore:`.
