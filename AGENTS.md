@@ -51,3 +51,29 @@ Single-container planning poker app for remote teams. Works in Firefox and Chrom
 ### Browser Compatibility
 - Firefox (latest)
 - Chromium-based browsers (Chrome, Edge, Brave, etc.)
+
+## Testing
+
+### Running Tests
+```bash
+npm test          # run once
+npm run test:watch # watch mode
+```
+
+Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against the actual server in-process (`AUTO_START=false` prevents the server from binding to a port on module load).
+
+### Test Coverage
+`tests/server.test.js` covers:
+- **Lobby Lifecycle**: creation, joining, UUID validation, prototype-pollution resistance, max-participants cap, disconnect cleanup
+- **Estimation Flow**: allowed values, value whitelist, changing mind before reveal, reveal preconditions, reset behavior, multi-round support
+- **PO Role**: self-assignment, exclusion from reveal condition, server-side estimate blocking
+- **State Redaction**: hidden votes show `✓`/`?`, own estimate visible, no raw value leakage before reveal
+- **Name Sanitization**: HTML metacharacter stripping, 15-char truncation
+- **Rate Limiting**: join, estimate, reveal, reset, setName per-socket limits
+- **Authorization / Security Regressions**: non-participants blocked from reveal, reset, setName, setPO, estimate; reveal blocked until all non-POs estimated
+- **Multi-Lobby**: parallel lobby membership
+- **HTTP Layer**: static files, security headers, HTTP 429 rate limit
+- **Utilities**: `isValidLobbyId`, `sanitizeName`
+
+### After Any Code Change
+**Always run the full test suite** before considering a task complete. If tests fail, fix the code or update tests if the behavior change is intentional. Never leave the test suite failing.

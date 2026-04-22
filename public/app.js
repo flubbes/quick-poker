@@ -5,11 +5,13 @@ createApp({
     return {
       state: null,
       myId: null,
+      currentLobbyId: '',
       name: localStorage.getItem('qp-name') || 'Anonymous',
       po: false,
       showSettings: false,
       rateLimitMsg: null,
-      rateLimitTimer: null
+      rateLimitTimer: null,
+      heartbeatInterval: null
     };
   },
   computed: {
@@ -32,12 +34,14 @@ createApp({
         return;
       }
       location.hash = id;
+      this.currentLobbyId = id;
       this.myId = this.socket.id;
-      this.socket.emit('setName', this.name);
-      if (this.po) this.socket.emit('setPO', true);
+      this.socket.emit('setName', id, this.name);
+      if (this.po) this.socket.emit('setPO', id, true);
     });
 
     this.socket.on('state', (state) => {
+      if (state.lobbyId !== this.currentLobbyId) return;
       this.state = state;
       const me = state.participants.find(p => p.id === this.myId);
       if (me) this.po = me.po;
@@ -50,23 +54,32 @@ createApp({
         this.rateLimitMsg = null;
       }, retryAfter * 1000);
     });
+
+    this.heartbeatInterval = setInterval(() => {
+      if (this.socket.connected) {
+        this.socket.emit('heartbeat');
+      }
+    }, 5000);
+  },
+  beforeUnmount() {
+    clearInterval(this.heartbeatInterval);
   },
   methods: {
     updateName() {
       localStorage.setItem('qp-name', this.name);
-      this.socket.emit('setName', this.name);
+      if (this.currentLobbyId) this.socket.emit('setName', this.currentLobbyId, this.name);
     },
     updatePO() {
-      this.socket.emit('setPO', this.po);
+      if (this.currentLobbyId) this.socket.emit('setPO', this.currentLobbyId, this.po);
     },
     estimate(val) {
-      this.socket.emit('estimate', val);
+      if (this.currentLobbyId) this.socket.emit('estimate', this.currentLobbyId, val);
     },
     reveal() {
-      this.socket.emit('reveal');
+      if (this.currentLobbyId) this.socket.emit('reveal', this.currentLobbyId);
     },
     reset() {
-      this.socket.emit('reset');
+      if (this.currentLobbyId) this.socket.emit('reset', this.currentLobbyId);
     }
   }
 }).mount('#app');
