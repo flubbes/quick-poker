@@ -2,23 +2,32 @@
   "name": "quick-poker",
   "version": "1.0.0",
   "description": "Single-container planning poker app",
-  "main": "server.js",
+  "main": "dist/src/server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "esbuild public/app.ts --outfile=public/app.js --format=iife && tsx src/server.ts",
+    "build": "tsc && esbuild public/app.ts --outfile=public/app.js --format=iife",
+    "dev": "esbuild public/app.ts --outfile=public/app.js --format=iife && tsx src/server.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc public/app.ts public/global.d.ts --noEmit --ignoreConfig --target ES2022 --module ES2022 --moduleResolution bundler --lib ES2022,DOM --strict --esModuleInterop --skipLibCheck --forceConsistentCasingInFileNames"
   },
   "dependencies": {
+    "esbuild": "0.28.0",
     "express": "5.2.1",
-    "express-rate-limit": "^7.5.0",
-    "helmet": "^8.1.0",
+    "express-rate-limit": "7.5.0",
+    "helmet": "8.1.0",
     "socket.io": "4.8.3",
     "vue": "3.5.33"
   },
   "devDependencies": {
-    "socket.io-client": "^4.8.3",
-    "supertest": "^7.2.2",
-    "vitest": "^4.1.5",
-    "ws": "^8.20.0"
+    "@types/express": "5.0.6",
+    "@types/node": "25.6.0",
+    "@types/supertest": "7.2.0",
+    "socket.io-client": "4.8.3",
+    "supertest": "7.2.2",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.5",
+    "ws": "8.20.0"
   }
 }

@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { createRequire } from 'module';
 import { io as Client } from 'socket.io-client';
 import request from 'supertest';
-
-process.env.AUTO_START = 'false';
-const require = createRequire(import.meta.url);
-const {
+import {
   app,
   httpServer,
   io,
@@ -16,9 +12,10 @@ const {
   sanitizeName,
   ALLOWED_ESTIMATES,
   MAX_PARTICIPANTS
-} = require('../server.js');
+} from '../src/server';
+import type { LobbyState } from '../src/server';
 
-let port;
+let port: number;
 
 function createSocket() {
   return Client(`http://localhost:${port}`, {
@@ -26,21 +23,21 @@ function createSocket() {
   });
 }
 
-function connect(client) {
+function connect(client: ReturnType<typeof createSocket>): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Socket connection timeout')), 3000);
     client.on('connect', () => {
       clearTimeout(timer);
       resolve();
     });
-    client.on('connect_error', (err) => {
+    client.on('connect_error', (err: Error) => {
       clearTimeout(timer);
       reject(err);
     });
   });
 }
 
-function disconnect(client) {
+function disconnect(client: ReturnType<typeof createSocket>): Promise<void> {
   return new Promise((resolve) => {
     if (!client.connected) return resolve();
     client.disconnect();
@@ -48,37 +45,42 @@ function disconnect(client) {
   });
 }
 
-function join(client, lobbyId = '') {
+function join(client: ReturnType<typeof createSocket>, lobbyId = ''): Promise<string | null> {
   return new Promise((resolve) => {
-    client.emit('join', lobbyId, (id) => resolve(id));
+    client.emit('join', lobbyId, (id: string | null) => resolve(id));
   });
 }
 
-function waitForEvent(client, event) {
+function waitForEvent<T>(client: ReturnType<typeof createSocket>, event: string): Promise<T | null> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), 3000);
-    client.once(event, (data) => {
+    client.once(event, (data: T) => {
       clearTimeout(timer);
       resolve(data);
     });
   });
 }
 
-function waitForState(client) {
-  return waitForEvent(client, 'state');
+type Participant = NonNullable<LobbyState>['participants'][number];
+
+function waitForState(client: ReturnType<typeof createSocket>) {
+  return waitForEvent<LobbyState>(client, 'state');
 }
 
 beforeAll(() => {
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     httpServer.listen(0, () => {
-      port = httpServer.address().port;
+      const address = httpServer.address();
+      if (address && typeof address === 'object') {
+        port = address.port;
+      }
       resolve();
     });
   });
 });
 
 afterAll(() => {
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     io.close();
     httpServer.closeAllConnections?.();
     httpServer.close(() => resolve());
@@ -106,8 +108,8 @@ describe('Lobby Lifecycle', () => {
     const lobbyId = await join(client);
     expect(lobbyId).toBeTruthy();
     expect(isValidLobbyId(lobbyId)).toBe(true);
-    expect(lobbies[lobbyId]).toBeTruthy();
-    expect(lobbies[lobbyId].revealed).toBe(false);
+    expect(lobbies[lobbyId as string]).toBeTruthy();
+    expect(lobbies[lobbyId as string].revealed).toBe(false);
     await disconnect(client);
   });
 
@@ -118,9 +120,9 @@ describe('Lobby Lifecycle', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    const joinedId = await join(clientB, lobbyId);
+    const joinedId = await join(clientB, lobbyId as string);
     expect(joinedId).toBe(lobbyId);
-    expect(Object.keys(lobbies[lobbyId].participants)).toHaveLength(2);
+    expect(Object.keys(lobbies[lobbyId as string].participants)).toHaveLength(2);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -156,13 +158,13 @@ describe('Lobby Lifecycle', () => {
     await join(client, 'constructor');
     await join(client, 'toString');
     // Object.prototype should not be polluted
-    expect(({}).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     await disconnect(client);
   });
 
   it('caps lobby size at MAX_PARTICIPANTS', async () => {
     const lobbyId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-    const clients = [];
+    const clients: ReturnType<typeof createSocket>[] = [];
 
     // First client creates the lobby
     const first = createSocket();
@@ -180,7 +182,7 @@ describe('Lobby Lifecycle', () => {
       clients.push(client);
     }
 
-    expect(Object.keys(lobbies[lobbyId].participants)).toHaveLength(MAX_PARTICIPANTS);
+    expect(Object.keys(lobbies[lobbyId as string].participants)).toHaveLength(MAX_PARTICIPANTS);
 
     // Next join should fail
     const overflow = createSocket();
@@ -199,14 +201,14 @@ describe('Lobby Lifecycle', () => {
     const lobbyId = await join(clientA);
     const stateA = await statePromiseA;
     expect(stateA).toBeTruthy();
-    expect(stateA.participants).toHaveLength(1);
+    expect(stateA?.participants).toHaveLength(1);
 
     const clientB = createSocket();
     await connect(clientB);
     const statePromiseB = waitForState(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
     const stateB = await statePromiseB;
-    expect(stateB.participants).toHaveLength(2);
+    expect(stateB?.participants).toHaveLength(2);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -219,13 +221,13 @@ describe('Lobby Lifecycle', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
-    expect(Object.keys(lobbies[lobbyId].participants)).toHaveLength(2);
+    await join(clientB, lobbyId as string);
+    expect(Object.keys(lobbies[lobbyId as string].participants)).toHaveLength(2);
 
     await disconnect(clientA);
     // Give server a moment to process disconnect
     await new Promise((r) => setTimeout(r, 200));
-    expect(Object.keys(lobbies[lobbyId].participants)).toHaveLength(1);
+    expect(Object.keys(lobbies[lobbyId as string].participants)).toHaveLength(1);
 
     await disconnect(clientB);
   });
@@ -245,8 +247,8 @@ describe('Estimation Flow', () => {
       const statePromise = waitForState(client);
       client.emit('estimate', lobbyId, val);
       const state = await statePromise;
-      const me = state.participants.find((p) => p.id === client.id);
-      expect(me.estimate).toBe(val);
+      const me = state?.participants.find((p: Participant) => p.id === client.id);
+      expect(me?.estimate).toBe(val);
     }
 
     await disconnect(client);
@@ -259,15 +261,15 @@ describe('Estimation Flow', () => {
 
     client.emit('estimate', lobbyId, 999);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[client.id].estimate).toBeNull();
+    expect(lobbies[lobbyId as string].participants[client.id as string].estimate).toBeNull();
 
     client.emit('estimate', lobbyId, 'five');
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[client.id].estimate).toBeNull();
+    expect(lobbies[lobbyId as string].participants[client.id as string].estimate).toBeNull();
 
     client.emit('estimate', lobbyId, -1);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[client.id].estimate).toBeNull();
+    expect(lobbies[lobbyId as string].participants[client.id as string].estimate).toBeNull();
 
     await disconnect(client);
   });
@@ -282,8 +284,8 @@ describe('Estimation Flow', () => {
 
     client.emit('estimate', lobbyId, 8);
     const state = await waitForState(client);
-    const me = state.participants.find((p) => p.id === client.id);
-    expect(me.estimate).toBe(8);
+    const me = state?.participants.find((p: Participant) => p.id === client.id);
+    expect(me?.estimate).toBe(8);
 
     await disconnect(client);
   });
@@ -298,11 +300,11 @@ describe('Estimation Flow', () => {
 
     client.emit('reveal', lobbyId);
     await waitForState(client);
-    expect(lobbies[lobbyId].revealed).toBe(true);
+    expect(lobbies[lobbyId as string].revealed).toBe(true);
 
     client.emit('estimate', lobbyId, 8);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[client.id].estimate).toBe(5);
+    expect(lobbies[lobbyId as string].participants[client.id as string].estimate).toBe(5);
 
     await disconnect(client);
   });
@@ -314,12 +316,12 @@ describe('Estimation Flow', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
 
     // Nobody estimated yet
     clientA.emit('estimate', lobbyId, 5);
     const state = await waitForState(clientA);
-    expect(state.canReveal).toBe(false);
+    expect(state?.canReveal).toBe(false);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -332,14 +334,14 @@ describe('Estimation Flow', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
 
     clientA.emit('estimate', lobbyId, 5);
     await waitForState(clientA);
 
     clientB.emit('estimate', lobbyId, 8);
     const state = await waitForState(clientA);
-    expect(state.canReveal).toBe(true);
+    expect(state?.canReveal).toBe(true);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -352,7 +354,7 @@ describe('Estimation Flow', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
 
     clientA.emit('estimate', lobbyId, 5);
     await waitForState(clientA);
@@ -361,14 +363,14 @@ describe('Estimation Flow', () => {
 
     clientA.emit('reveal', lobbyId);
     const state = await waitForState(clientA);
-    expect(state.revealed).toBe(true);
-    expect(state.participants.find((p) => p.id === clientA.id).estimate).toBe(5);
-    expect(state.participants.find((p) => p.id === clientB.id).estimate).toBe(8);
+    expect(state?.revealed).toBe(true);
+    expect(state?.participants.find((p: Participant) => p.id === clientA.id)?.estimate).toBe(5);
+    expect(state?.participants.find((p: Participant) => p.id === clientB.id)?.estimate).toBe(8);
 
     // Try to estimate after reveal
     clientA.emit('estimate', lobbyId, 13);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[clientA.id].estimate).toBe(5);
+    expect(lobbies[lobbyId as string].participants[clientA.id as string].estimate).toBe(5);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -381,7 +383,7 @@ describe('Estimation Flow', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
 
     clientA.emit('estimate', lobbyId, 5);
     await waitForState(clientA);
@@ -390,12 +392,12 @@ describe('Estimation Flow', () => {
 
     clientA.emit('reveal', lobbyId);
     await waitForState(clientA);
-    expect(lobbies[lobbyId].revealed).toBe(true);
+    expect(lobbies[lobbyId as string].revealed).toBe(true);
 
     clientA.emit('reset', lobbyId);
     const state = await waitForState(clientA);
-    expect(state.revealed).toBe(false);
-    expect(state.participants.every((p) => p.estimate === '?' || p.estimate === null || p.estimate === '✓')).toBe(true);
+    expect(state?.revealed).toBe(false);
+    expect(state?.participants.every((p) => p.estimate === '?' || p.estimate === null || p.estimate === '✓')).toBe(true);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -411,7 +413,7 @@ describe('Estimation Flow', () => {
 
     client.emit('reset', lobbyId);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].revealed).toBe(false);
+    expect(lobbies[lobbyId as string].revealed).toBe(false);
 
     await disconnect(client);
   });
@@ -432,9 +434,9 @@ describe('Estimation Flow', () => {
     // Round 2
     client.emit('estimate', lobbyId, 8);
     const state = await waitForState(client);
-    expect(state.revealed).toBe(false);
-    const me = state.participants.find((p) => p.id === client.id);
-    expect(me.estimate).toBe(8);
+    expect(state?.revealed).toBe(false);
+    const me = state?.participants.find((p: Participant) => p.id === client.id);
+    expect(me?.estimate).toBe(8);
 
     await disconnect(client);
   });
@@ -452,8 +454,8 @@ describe('PO Role', () => {
 
     client.emit('setPO', lobbyId, true);
     const state = await waitForState(client);
-    const me = state.participants.find((p) => p.id === client.id);
-    expect(me.po).toBe(true);
+    const me = state?.participants.find((p: Participant) => p.id === client.id);
+    expect(me?.po).toBe(true);
 
     await disconnect(client);
   });
@@ -467,12 +469,12 @@ describe('PO Role', () => {
 
     const normalClient = createSocket();
     await connect(normalClient);
-    await join(normalClient, lobbyId);
+    await join(normalClient, lobbyId as string);
 
     // Only the non-PO needs to estimate for reveal to be possible
     normalClient.emit('estimate', lobbyId, 5);
     const state = await waitForState(normalClient);
-    expect(state.canReveal).toBe(true);
+    expect(state?.canReveal).toBe(true);
 
     await disconnect(poClient);
     await disconnect(normalClient);
@@ -488,7 +490,7 @@ describe('PO Role', () => {
 
     client.emit('estimate', lobbyId, 5);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[client.id].estimate).toBeNull();
+    expect(lobbies[lobbyId as string].participants[client.id as string].estimate).toBeNull();
 
     await disconnect(client);
   });
@@ -505,7 +507,7 @@ describe('PO Role', () => {
 
     client.emit('estimate', lobbyId, 5);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[client.id].estimate).toBeNull();
+    expect(lobbies[lobbyId as string].participants[client.id as string].estimate).toBeNull();
 
     await disconnect(client);
   });
@@ -525,30 +527,30 @@ describe('State Redaction', () => {
     const statePromiseA = waitForState(clientA);
     clientA.emit('estimate', lobbyId, 5);
     const stateAfterEstimate = await statePromiseA;
-    const meAfterEstimate = stateAfterEstimate.participants.find((p) => p.id === clientA.id);
-    expect(meAfterEstimate.estimate).toBe(5);
+    const meAfterEstimate = stateAfterEstimate?.participants.find((p: Participant) => p.id === clientA.id);
+    expect(meAfterEstimate?.estimate).toBe(5);
 
     // B joins
     const clientB = createSocket();
     await connect(clientB);
     const statePromiseB = waitForState(clientB);
     const statePromiseA2 = waitForState(clientA);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
 
     const stateB = await statePromiseB;
     const stateA2 = await statePromiseA2;
 
     // From A's view: own estimate visible, B hasn't estimated
-    const aFromA = stateA2.participants.find((p) => p.id === clientA.id);
-    const bFromA = stateA2.participants.find((p) => p.id === clientB.id);
-    expect(aFromA.estimate).toBe(5);
-    expect(bFromA.estimate).toBe('?');
+    const aFromA = stateA2?.participants.find((p: Participant) => p.id === clientA.id);
+    const bFromA = stateA2?.participants.find((p: Participant) => p.id === clientB.id);
+    expect(aFromA?.estimate).toBe(5);
+    expect(bFromA?.estimate).toBe('?');
 
     // From B's view: A's estimate hidden as '✓', B's own estimate is null (not estimated yet)
-    const aFromB = stateB.participants.find((p) => p.id === clientA.id);
-    const bFromB = stateB.participants.find((p) => p.id === clientB.id);
-    expect(aFromB.estimate).toBe('✓');
-    expect(bFromB.estimate).toBeNull(); // own un-submitted estimate is shown as null
+    const aFromB = stateB?.participants.find((p: Participant) => p.id === clientA.id);
+    const bFromB = stateB?.participants.find((p: Participant) => p.id === clientB.id);
+    expect(aFromB?.estimate).toBe('✓');
+    expect(bFromB?.estimate).toBeNull(); // own un-submitted estimate is shown as null
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -563,15 +565,15 @@ describe('State Redaction', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
     clientB.emit('estimate', lobbyId, 8);
     await waitForState(clientA);
 
     clientA.emit('reveal', lobbyId);
     const state = await waitForState(clientA);
-    expect(state.revealed).toBe(true);
-    expect(state.participants.find((p) => p.id === clientA.id).estimate).toBe(5);
-    expect(state.participants.find((p) => p.id === clientB.id).estimate).toBe(8);
+    expect(state?.revealed).toBe(true);
+    expect(state?.participants.find((p: Participant) => p.id === clientA.id)?.estimate).toBe(5);
+    expect(state?.participants.find((p: Participant) => p.id === clientB.id)?.estimate).toBe(8);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -588,10 +590,10 @@ describe('State Redaction', () => {
     const clientB = createSocket();
     await connect(clientB);
     const statePromise = waitForState(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
     const state = await statePromise;
 
-    const aEstimate = state.participants.find((p) => p.id === clientA.id).estimate;
+    const aEstimate = state?.participants.find((p: Participant) => p.id === clientA.id)?.estimate;
     expect(aEstimate).not.toBe(13);
     expect(aEstimate).not.toBe(5);
     expect(aEstimate).not.toBe(8);
@@ -615,9 +617,9 @@ describe('Name Sanitization', () => {
     // Name is sliced to 15 chars first, then HTML chars stripped
     client.emit('setName', lobbyId, '<script>alert(1)</script>');
     const state = await waitForState(client);
-    const me = state.participants.find((p) => p.id === client.id);
+    const me = state?.participants.find((p: Participant) => p.id === client.id);
     // '<script>alert(1' (15 chars) -> remove < and > -> 'scriptalert(1'
-    expect(me.name).toBe('scriptalert(1');
+    expect(me?.name).toBe('scriptalert(1');
 
     await disconnect(client);
   });
@@ -629,8 +631,8 @@ describe('Name Sanitization', () => {
 
     client.emit('setName', lobbyId, 'ThisIsAVeryLongNameThatExceeds');
     const state = await waitForState(client);
-    const me = state.participants.find((p) => p.id === client.id);
-    expect(me.name.length).toBeLessThanOrEqual(15);
+    const me = state?.participants.find((p: Participant) => p.id === client.id);
+    expect(me?.name.length).toBeLessThanOrEqual(15);
 
     await disconnect(client);
   });
@@ -650,11 +652,11 @@ describe('Rate Limiting', () => {
       await join(client);
     }
 
-    const limited = waitForEvent(client, 'rate-limited');
+    const limited = waitForEvent<{ event: string }>(client, 'rate-limited');
     client.emit('join', '');
     const rateLimited = await limited;
     expect(rateLimited).toBeTruthy();
-    expect(rateLimited.event).toBe('join');
+    expect(rateLimited?.event).toBe('join');
 
     await disconnect(client);
   });
@@ -670,11 +672,11 @@ describe('Rate Limiting', () => {
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    const limited = waitForEvent(client, 'rate-limited');
+    const limited = waitForEvent<{ event: string }>(client, 'rate-limited');
     client.emit('estimate', lobbyId, ALLOWED_ESTIMATES[0]);
     const rateLimited = await limited;
     expect(rateLimited).toBeTruthy();
-    expect(rateLimited.event).toBe('estimate');
+    expect(rateLimited?.event).toBe('estimate');
 
     await disconnect(client);
   });
@@ -692,11 +694,11 @@ describe('Rate Limiting', () => {
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    const limited = waitForEvent(client, 'rate-limited');
+    const limited = waitForEvent<{ event: string }>(client, 'rate-limited');
     client.emit('reveal', lobbyId);
     const rateLimited = await limited;
     expect(rateLimited).toBeTruthy();
-    expect(rateLimited.event).toBe('reveal');
+    expect(rateLimited?.event).toBe('reveal');
 
     await disconnect(client);
   });
@@ -716,11 +718,11 @@ describe('Rate Limiting', () => {
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    const limited = waitForEvent(client, 'rate-limited');
+    const limited = waitForEvent<{ event: string }>(client, 'rate-limited');
     client.emit('reset', lobbyId);
     const rateLimited = await limited;
     expect(rateLimited).toBeTruthy();
-    expect(rateLimited.event).toBe('reset');
+    expect(rateLimited?.event).toBe('reset');
 
     await disconnect(client);
   });
@@ -736,11 +738,11 @@ describe('Rate Limiting', () => {
       await new Promise((r) => setTimeout(r, 10));
     }
 
-    const limited = waitForEvent(client, 'rate-limited');
+    const limited = waitForEvent<{ event: string }>(client, 'rate-limited');
     client.emit('setName', lobbyId, 'TooMany');
     const rateLimited = await limited;
     expect(rateLimited).toBeTruthy();
-    expect(rateLimited.event).toBe('setName');
+    expect(rateLimited?.event).toBe('setName');
 
     await disconnect(client);
   });
@@ -764,7 +766,7 @@ describe('Authorization & Security Regressions', () => {
 
     attacker.emit('reveal', lobbyId);
     await new Promise((r) => setTimeout(r, 200));
-    expect(lobbies[lobbyId].revealed).toBe(false);
+    expect(lobbies[lobbyId as string].revealed).toBe(false);
 
     await disconnect(victimA);
     await disconnect(attacker);
@@ -778,7 +780,7 @@ describe('Authorization & Security Regressions', () => {
     await waitForState(victimA);
     victimA.emit('reveal', lobbyId);
     await waitForState(victimA);
-    expect(lobbies[lobbyId].revealed).toBe(true);
+    expect(lobbies[lobbyId as string].revealed).toBe(true);
 
     const attacker = createSocket();
     await connect(attacker);
@@ -786,7 +788,7 @@ describe('Authorization & Security Regressions', () => {
 
     attacker.emit('reset', lobbyId);
     await new Promise((r) => setTimeout(r, 200));
-    expect(lobbies[lobbyId].revealed).toBe(true);
+    expect(lobbies[lobbyId as string].revealed).toBe(true);
 
     await disconnect(victimA);
     await disconnect(attacker);
@@ -796,13 +798,13 @@ describe('Authorization & Security Regressions', () => {
     const victim = createSocket();
     await connect(victim);
     const lobbyId = await join(victim);
-    const originalName = lobbies[lobbyId].participants[victim.id].name;
+    const originalName = lobbies[lobbyId as string].participants[victim.id as string].name;
 
     const attacker = createSocket();
     await connect(attacker);
     attacker.emit('setName', lobbyId, 'Hacked');
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[victim.id].name).toBe(originalName);
+    expect(lobbies[lobbyId as string].participants[victim.id as string].name).toBe(originalName);
 
     await disconnect(victim);
     await disconnect(attacker);
@@ -812,13 +814,13 @@ describe('Authorization & Security Regressions', () => {
     const victim = createSocket();
     await connect(victim);
     const lobbyId = await join(victim);
-    const originalPO = lobbies[lobbyId].participants[victim.id].po;
+    const originalPO = lobbies[lobbyId as string].participants[victim.id as string].po;
 
     const attacker = createSocket();
     await connect(attacker);
     attacker.emit('setPO', lobbyId, true);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].participants[victim.id].po).toBe(originalPO);
+    expect(lobbies[lobbyId as string].participants[victim.id as string].po).toBe(originalPO);
 
     await disconnect(victim);
     await disconnect(attacker);
@@ -833,7 +835,7 @@ describe('Authorization & Security Regressions', () => {
     await connect(attacker);
     attacker.emit('estimate', lobbyId, 5);
     await new Promise((r) => setTimeout(r, 100));
-    expect(Object.keys(lobbies[lobbyId].participants)).toHaveLength(1);
+    expect(Object.keys(lobbies[lobbyId as string].participants)).toHaveLength(1);
 
     await disconnect(victim);
     await disconnect(attacker);
@@ -846,7 +848,7 @@ describe('Authorization & Security Regressions', () => {
 
     const clientB = createSocket();
     await connect(clientB);
-    await join(clientB, lobbyId);
+    await join(clientB, lobbyId as string);
 
     // Only A estimates
     clientA.emit('estimate', lobbyId, 5);
@@ -854,7 +856,7 @@ describe('Authorization & Security Regressions', () => {
 
     clientA.emit('reveal', lobbyId);
     await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId].revealed).toBe(false);
+    expect(lobbies[lobbyId as string].revealed).toBe(false);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -874,8 +876,8 @@ describe('Multi-Lobby Support', () => {
     const lobbyB = await join(client);
 
     expect(lobbyA).not.toBe(lobbyB);
-    expect(lobbies[lobbyA].participants[client.id]).toBeTruthy();
-    expect(lobbies[lobbyB].participants[client.id]).toBeTruthy();
+    expect(lobbies[lobbyA as string].participants[client.id as string]).toBeTruthy();
+    expect(lobbies[lobbyB as string].participants[client.id as string]).toBeTruthy();
 
     await disconnect(client);
   });
@@ -887,12 +889,12 @@ describe('Multi-Lobby Support', () => {
     const statePromiseA = waitForState(client);
     const lobbyA = await join(client);
     const stateA = await statePromiseA;
-    expect(stateA.lobbyId).toBe(lobbyA);
+    expect(stateA?.lobbyId).toBe(lobbyA);
 
     const statePromiseB = waitForState(client);
     const lobbyB = await join(client);
     const stateB = await statePromiseB;
-    expect(stateB.lobbyId).toBe(lobbyB);
+    expect(stateB?.lobbyId).toBe(lobbyB);
 
     await disconnect(client);
   });
@@ -925,7 +927,7 @@ describe('HTTP Layer', () => {
 
   it('returns 429 when HTTP rate limit is exceeded', async () => {
     // Make many rapid requests to trigger rate limit
-    const requests = [];
+    const requests: Promise<import('supertest').Response>[] = [];
     for (let i = 0; i < 250; i++) {
       requests.push(request(app).get('/'));
     }

@@ -5,3 +5,5 @@ node_modules
 npm-debug.log*
 .nyc_output
 coverage
+public/app.js
+dist

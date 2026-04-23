@@ -63,7 +63,7 @@ npm run test:watch # watch mode
 Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against the actual server in-process (`AUTO_START=false` prevents the server from binding to a port on module load).
 
 ### Test Coverage
-`tests/server.test.js` covers:
+`tests/server.test.ts` covers:
 - **Lobby Lifecycle**: creation, joining, UUID validation, prototype-pollution resistance, max-participants cap, disconnect cleanup
 - **Estimation Flow**: allowed values, value whitelist, changing mind before reveal, reveal preconditions, reset behavior, multi-round support
 - **PO Role**: self-assignment, exclusion from reveal condition, server-side estimate blocking
