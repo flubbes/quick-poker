@@ -6,5 +6,4 @@ COPY . .
 RUN chown -R node:node /app
 USER node
 EXPOSE 3000
-ENV TRUST_PROXY=true
 CMD ["node", "server.js"]

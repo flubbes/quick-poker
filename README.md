@@ -28,6 +28,12 @@ docker build -t quick-poker .
 docker run -p 3000:3000 quick-poker
 ```
 
+If you run the container behind a trusted reverse proxy (e.g. Nginx, Caddy, Traefik), pass `TRUST_PROXY=true` so rate-limiting keys off the correct client IP:
+
+```bash
+docker run -e TRUST_PROXY=true -p 3000:3000 quick-poker
+```
+
 ## How it works
 
 1. Open the app — a new session is created automatically.
