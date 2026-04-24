@@ -290,6 +290,8 @@ io.on('connection', (socket) => {
   });
 
   socket.on('heartbeat', () => {
+    const check = socketLimiter.isAllowed(socket.id, 'heartbeat', 60, 60_000);
+    if (!check.allowed) return;
     lastHeartbeats.set(socket.id, Date.now());
   });
 
