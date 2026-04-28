@@ -47,7 +47,7 @@ app.use(httpLimiter);
 
 app.use(express.static('public'));
 app.get('/vue.global.js', (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, '..', 'node_modules', 'vue', 'dist', 'vue.global.js'));
+  res.sendFile(path.join(process.cwd(), 'node_modules', 'vue', 'dist', 'vue.global.js'));
 });
 
 // Types
