@@ -914,6 +914,7 @@ describe('HTTP Layer', () => {
   it('serves vue.global.js', async () => {
     const res = await request(app).get('/vue.global.js');
     expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toMatch(/javascript/);
     expect(res.text).toContain('Vue');
   });
 
