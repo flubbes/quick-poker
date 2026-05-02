@@ -3,6 +3,7 @@
 Single-container planning poker app for remote teams. Works in Firefox and Chromium-based browsers.
 
 ## Architecture
+
 - **Backend**: Node.js + Express + Socket.IO
 - **Frontend**: Vue 3 (global build, served from container)
 - **Styling**: Vanilla CSS, dark mode only
@@ -11,6 +12,7 @@ Single-container planning poker app for remote teams. Works in Firefox and Chrom
 ## Requirements
 
 ### Lobby / Session Lifecycle
+
 1. Opening `/` creates a new planning session.
 2. URL updates to a sharable link with a non-guessable lobby ID (URL hash).
 3. Opening an existing lobby link shows current participants.
@@ -18,6 +20,7 @@ Single-container planning poker app for remote teams. Works in Firefox and Chrom
 5. Lobby starts in "ready to estimate" state with all cards hidden.
 
 ### Estimation Flow
+
 1. Possible estimations: `0, 1, 2, 3, 5, 8, 13, 20, 40`.
 2. Until someone clicks **Reveal**, all cards stay hidden.
 3. The first person to estimate can still change their mind until reveal.
@@ -30,11 +33,13 @@ Single-container planning poker app for remote teams. Works in Firefox and Chrom
 7. Clicking **Reset** starts a new estimation round (all cards hidden, estimates cleared).
 
 ### Product Owner (PO) Role
+
 1. A user can flag themselves as PO via the settings modal.
 2. POs are **not** counted toward the group that must estimate.
 3. The Reveal button becomes active based only on non-PO participants.
 
 ### User Settings
+
 1. A cogwheel icon in the top-right opens a settings modal.
 2. Users can change their display name.
 3. Username is persisted in `localStorage`.
@@ -42,6 +47,7 @@ Single-container planning poker app for remote teams. Works in Firefox and Chrom
 5. Users can toggle PO status in the same modal.
 
 ### UI / UX
+
 1. Dark mode only.
 2. Clean and simple visual design.
 3. Cards show a placeholder (`?` or `✓`) while hidden, actual value when revealed.
@@ -49,12 +55,14 @@ Single-container planning poker app for remote teams. Works in Firefox and Chrom
 5. PO participants are visually distinguished (e.g., border color).
 
 ### Browser Compatibility
+
 - Firefox (latest)
 - Chromium-based browsers (Chrome, Edge, Brave, etc.)
 
 ## Testing
 
 ### Running Tests
+
 ```bash
 npm test          # run once
 npm run test:watch # watch mode
@@ -63,7 +71,9 @@ npm run test:watch # watch mode
 Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against the actual server in-process (`AUTO_START=false` prevents the server from binding to a port on module load).
 
 ### Test Coverage
+
 `tests/server.test.ts` covers:
+
 - **Lobby Lifecycle**: creation, joining, UUID validation, prototype-pollution resistance, max-participants cap, disconnect cleanup
 - **Estimation Flow**: allowed values, value whitelist, changing mind before reveal, reveal preconditions, reset behavior, multi-round support
 - **PO Role**: self-assignment, exclusion from reveal condition, server-side estimate blocking
@@ -76,7 +86,9 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 - **Utilities**: `isValidLobbyId`, `sanitizeName`
 
 ### After Any Code Change
-**Always run the full test suite** before considering a task complete. If tests fail, fix the code or update tests if the behavior change is intentional. Never leave the test suite failing.
+
+1. **Run formatting check**: `npm run format:check`. If formatting issues are found, run `npm run format` to fix them.
+2. **Run the full test suite**: `npm test`. If tests fail, fix the code or update tests if the behavior change is intentional. Never leave the test suite failing.
 
 ## Commit Conventions
 
@@ -87,6 +99,7 @@ All commits **must** follow the [Conventional Commits](https://www.conventionalc
 ```
 
 Common types used in this project:
+
 - `feat:` — new feature or behavior
 - `fix:` — bug fix
 - `docs:` — documentation-only changes
@@ -95,6 +108,7 @@ Common types used in this project:
 - `chore:` — tooling, dependency updates, or other maintenance
 
 Examples:
+
 ```
 feat: add heartbeat rate limiting to socket events
 fix: prevent PO from submitting estimates
