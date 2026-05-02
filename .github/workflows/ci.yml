@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.15.0"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: docker build --load -t quick-poker .
+
+      - name: Start container for smoke test
+        run: docker run -d --name qp-smoke -p 3000:3000 quick-poker
+
+      - name: Wait for container to be ready
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:3000/ > /dev/null; then
+              echo "Container is ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Container failed to start"
+          docker logs qp-smoke
+          exit 1
+
+      - name: HTTP smoke test
+        run: |
+          curl -sf http://localhost:3000/ | grep -q "Quick Poker"
+          echo "HTTP smoke passed"
+
+      - name: Socket smoke test
+        run: |
+          node -e "
+            const { io } = require('socket.io-client');
+            const client = io('http://localhost:3000', { transports: ['polling'] });
+            client.on('connect', () => {
+              client.once('state', (state) => {
+                if (state.participants.length === 1) {
+                  console.log('Socket smoke passed');
+                  client.disconnect();
+                  process.exit(0);
+                } else {
+                  console.error('State mismatch', state);
+                  client.disconnect();
+                  process.exit(1);
+                }
+              });
+              client.emit('join', '', (id) => {
+                if (!id) {
+                  console.error('Join failed');
+                  client.disconnect();
+                  process.exit(1);
+                }
+              });
+            });
+            client.on('connect_error', (err) => {
+              console.error('Connect error:', err.message);
+              process.exit(1);
+            });
+            setTimeout(() => {
+              console.error('Socket smoke timeout');
+              client.disconnect();
+              process.exit(1);
+            }, 15000);
+          "
+
+      - name: Cleanup container
+        if: always()
+        run: docker stop qp-smoke && docker rm qp-smoke
