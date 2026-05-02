@@ -1,10 +1,12 @@
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
   background: #0d1117;
   color: #c9d1d9;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
 header {
@@ -15,7 +17,11 @@ header {
   border-bottom: 1px solid #30363d;
 }
 
-h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
+h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+}
 
 .icon-btn {
   background: none;
@@ -26,7 +32,9 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   line-height: 1;
 }
 
-.icon-btn:hover { color: #fff; }
+.icon-btn:hover {
+  color: #fff;
+}
 
 .lobby {
   max-width: 900px;
@@ -50,9 +58,13 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   transition: box-shadow 0.2s;
 }
 
-.card.po { border-color: #58a6ff; }
+.card.po {
+  border-color: #58a6ff;
+}
 
-.card.me { box-shadow: 0 0 0 2px #238636; }
+.card.me {
+  box-shadow: 0 0 0 2px #238636;
+}
 
 .name {
   font-size: 0.875rem;
@@ -86,7 +98,9 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   transition: background 0.15s;
 }
 
-.actions button:hover { background: #30363d; }
+.actions button:hover {
+  background: #30363d;
+}
 
 .actions button.selected {
   background: #238636;
@@ -115,7 +129,9 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   transition: background 0.15s;
 }
 
-.reveal-btn:hover { background: #388bfd; }
+.reveal-btn:hover {
+  background: #388bfd;
+}
 
 .reveal-btn:disabled {
   background: #21262d;
@@ -142,7 +158,11 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   max-width: 400px;
 }
 
-.modal-content h2 { margin-top: 0; margin-bottom: 1rem; font-size: 1.25rem; }
+.modal-content h2 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  font-size: 1.25rem;
+}
 
 .modal-content label {
   display: block;
@@ -171,7 +191,9 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   color: #c9d1d9 !important;
 }
 
-.checkbox-label input { margin: 0; }
+.checkbox-label input {
+  margin: 0;
+}
 
 .modal-content button {
   width: 100%;
@@ -185,7 +207,9 @@ h1 { margin: 0; font-size: 1.25rem; font-weight: 600; }
   transition: background 0.15s;
 }
 
-.modal-content button:hover { background: #30363d; }
+.modal-content button:hover {
+  background: #30363d;
+}
 
 .rate-limit-banner {
   background: #da3633;
