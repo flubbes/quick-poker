@@ -1,4 +1,4 @@
-type SocketInstance = import('socket.io-client').Socket;
+type SocketInstance = import("socket.io-client").Socket;
 
 interface Participant {
   id: string;
@@ -28,21 +28,19 @@ interface AppData {
   socket: SocketInstance | null;
 }
 
-const { createApp } = Vue;
-
-createApp({
+export const appOptions = {
   data(): AppData {
     return {
       state: null,
       myId: null,
-      currentLobbyId: '',
-      name: localStorage.getItem('qp-name') || 'Anonymous',
+      currentLobbyId: "",
+      name: (typeof localStorage !== "undefined" && localStorage.getItem("qp-name")) || "Anonymous",
       po: false,
       showSettings: false,
       rateLimitMsg: null,
       rateLimitTimer: null,
       heartbeatInterval: null,
-      socket: null
+      socket: null,
     };
   },
   computed: {
@@ -53,32 +51,33 @@ createApp({
     isPO(this: AppData): boolean {
       const me = this.state?.participants.find((p: Participant) => p.id === this.myId);
       return me?.po ?? false;
-    }
+    },
   },
   mounted(this: AppData) {
-    this.socket = io();
+    const socket = io();
+    this.socket = socket;
     const lobbyId = location.hash.slice(1);
 
-    this.socket.emit('join', lobbyId, (id: string | null) => {
+    socket.emit("join", lobbyId, (id: string | null) => {
       if (!id) {
-        alert('Failed to create or join lobby. Please try again later.');
+        alert("Failed to create or join lobby. Please try again later.");
         return;
       }
       location.hash = id;
       this.currentLobbyId = id;
-      this.myId = this.socket!.id ?? null;
-      this.socket!.emit('setName', id, this.name);
-      if (this.po) this.socket!.emit('setPO', id, true);
+      this.myId = socket.id ?? null;
+      socket.emit("setName", id, this.name);
+      if (this.po) socket.emit("setPO", id, true);
     });
 
-    this.socket.on('state', (state: LobbyState) => {
+    socket.on("state", (state: LobbyState) => {
       if (state.lobbyId !== this.currentLobbyId) return;
       this.state = state;
       const me = state.participants.find((p: Participant) => p.id === this.myId);
       if (me) this.po = me.po;
     });
 
-    this.socket.on('rate-limited', ({ event, retryAfter }: { event: string; retryAfter: number }) => {
+    socket.on("rate-limited", ({ event, retryAfter }: { event: string; retryAfter: number }) => {
       clearTimeout(this.rateLimitTimer ?? undefined);
       this.rateLimitMsg = `Too many ${event} requests. Retry after ${retryAfter}s.`;
       this.rateLimitTimer = setTimeout(() => {
@@ -87,8 +86,8 @@ createApp({
     });
 
     this.heartbeatInterval = setInterval(() => {
-      if (this.socket && this.socket.connected) {
-        this.socket.emit('heartbeat');
+      if (socket && socket.connected) {
+        socket.emit("heartbeat");
       }
     }, 5000);
   },
@@ -99,30 +98,35 @@ createApp({
   },
   methods: {
     updateName(this: AppData): void {
-      localStorage.setItem('qp-name', this.name);
+      localStorage.setItem("qp-name", this.name);
       if (this.currentLobbyId && this.socket) {
-        this.socket.emit('setName', this.currentLobbyId, this.name);
+        this.socket.emit("setName", this.currentLobbyId, this.name);
       }
     },
     updatePO(this: AppData): void {
       if (this.currentLobbyId && this.socket) {
-        this.socket.emit('setPO', this.currentLobbyId, this.po);
+        this.socket.emit("setPO", this.currentLobbyId, this.po);
       }
     },
     estimate(this: AppData, val: number): void {
       if (this.currentLobbyId && this.socket) {
-        this.socket.emit('estimate', this.currentLobbyId, val);
+        this.socket.emit("estimate", this.currentLobbyId, val);
       }
     },
     reveal(this: AppData): void {
       if (this.currentLobbyId && this.socket) {
-        this.socket.emit('reveal', this.currentLobbyId);
+        this.socket.emit("reveal", this.currentLobbyId);
       }
     },
     reset(this: AppData): void {
       if (this.currentLobbyId && this.socket) {
-        this.socket.emit('reset', this.currentLobbyId);
+        this.socket.emit("reset", this.currentLobbyId);
       }
-    }
-  }
-}).mount('#app');
+    },
+  },
+};
+
+if (typeof window !== "undefined" && document.getElementById("app")) {
+  const { createApp } = Vue;
+  createApp(appOptions).mount("#app");
+}

@@ -1,13 +1,12 @@
 "use strict";
 (() => {
-  const { createApp } = Vue;
-  createApp({
+  const appOptions = {
     data() {
       return {
         state: null,
         myId: null,
         currentLobbyId: "",
-        name: localStorage.getItem("qp-name") || "Anonymous",
+        name: typeof localStorage !== "undefined" && localStorage.getItem("qp-name") || "Anonymous",
         po: false,
         showSettings: false,
         rateLimitMsg: null,
@@ -27,26 +26,27 @@
       }
     },
     mounted() {
-      this.socket = io();
+      const socket = io();
+      this.socket = socket;
       const lobbyId = location.hash.slice(1);
-      this.socket.emit("join", lobbyId, (id) => {
+      socket.emit("join", lobbyId, (id) => {
         if (!id) {
           alert("Failed to create or join lobby. Please try again later.");
           return;
         }
         location.hash = id;
         this.currentLobbyId = id;
-        this.myId = this.socket.id ?? null;
-        this.socket.emit("setName", id, this.name);
-        if (this.po) this.socket.emit("setPO", id, true);
+        this.myId = socket.id ?? null;
+        socket.emit("setName", id, this.name);
+        if (this.po) socket.emit("setPO", id, true);
       });
-      this.socket.on("state", (state) => {
+      socket.on("state", (state) => {
         if (state.lobbyId !== this.currentLobbyId) return;
         this.state = state;
         const me = state.participants.find((p) => p.id === this.myId);
         if (me) this.po = me.po;
       });
-      this.socket.on("rate-limited", ({ event, retryAfter }) => {
+      socket.on("rate-limited", ({ event, retryAfter }) => {
         clearTimeout(this.rateLimitTimer ?? void 0);
         this.rateLimitMsg = `Too many ${event} requests. Retry after ${retryAfter}s.`;
         this.rateLimitTimer = setTimeout(() => {
@@ -54,8 +54,8 @@
         }, retryAfter * 1e3);
       });
       this.heartbeatInterval = setInterval(() => {
-        if (this.socket && this.socket.connected) {
-          this.socket.emit("heartbeat");
+        if (socket && socket.connected) {
+          socket.emit("heartbeat");
         }
       }, 5e3);
     },
@@ -92,5 +92,9 @@
         }
       }
     }
-  }).mount("#app");
+  };
+  if (typeof window !== "undefined" && document.getElementById("app")) {
+    const { createApp } = Vue;
+    createApp(appOptions).mount("#app");
+  }
 })();
