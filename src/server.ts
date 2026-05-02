@@ -1,36 +1,38 @@
-import express, { Request, Response, NextFunction } from 'express';
-import { createServer } from 'http';
-import { Server as SocketIOServer, Socket } from 'socket.io';
-import { randomUUID } from 'crypto';
-import path from 'path';
-import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
+import express, { Request, Response, NextFunction } from "express";
+import { createServer } from "http";
+import { Server as SocketIOServer, Socket } from "socket.io";
+import { randomUUID } from "crypto";
+import path from "path";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 
 const app = express();
 
-if (process.env.TRUST_PROXY === 'true') {
-  app.set('trust proxy', 1);
+if (process.env.TRUST_PROXY === "true") {
+  app.set("trust proxy", 1);
 }
 
 const httpServer = createServer(app);
 const io = new SocketIOServer(httpServer);
 
 // Security headers
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-eval'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      connectSrc: ["'self'"]
-    }
-  },
-  hsts: {
-    maxAge: 31536000,
-    includeSubDomains: true,
-    preload: true
-  }
-}));
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-eval'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        connectSrc: ["'self'"],
+      },
+    },
+    hsts: {
+      maxAge: 31536000,
+      includeSubDomains: true,
+      preload: true,
+    },
+  }),
+);
 
 // HTTP rate limiting (returns 429 with Retry-After)
 const httpLimiter = rateLimit({
@@ -39,15 +41,15 @@ const httpLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   handler: (_req: Request, res: Response, _next: NextFunction, options: { windowMs: number }) => {
-    res.setHeader('Retry-After', Math.ceil(options.windowMs / 1000));
-    res.status(429).json({ error: 'Too many requests, please try again later.' });
-  }
+    res.setHeader("Retry-After", Math.ceil(options.windowMs / 1000));
+    res.status(429).json({ error: "Too many requests, please try again later." });
+  },
 });
 app.use(httpLimiter);
 
-app.use(express.static('public'));
-app.get('/vue.global.js', (_req: Request, res: Response) => {
-  res.sendFile(path.join(process.cwd(), 'node_modules', 'vue', 'dist', 'vue.global.js'));
+app.use(express.static("public"));
+app.get("/vue.global.js", (_req: Request, res: Response) => {
+  res.sendFile(path.join(process.cwd(), "node_modules", "vue", "dist", "vue.global.js"));
 });
 
 // Types
@@ -106,14 +108,20 @@ const HEARTBEAT_INTERVAL = 5000;
 const HEARTBEAT_TIMEOUT = 30000;
 
 function isValidLobbyId(id: unknown): boolean {
-  return typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+  return (
+    typeof id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  );
 }
 
 function getClientIp(socket: Socket): string {
-  if (process.env.TRUST_PROXY === 'true') {
-    const forwarded = socket.handshake.headers['x-forwarded-for'];
+  if (process.env.TRUST_PROXY === "true") {
+    const forwarded = socket.handshake.headers["x-forwarded-for"];
     if (forwarded) {
-      const ips = String(forwarded).split(',').map(s => s.trim()).filter(Boolean);
+      const ips = String(forwarded)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
       return ips[ips.length - 1] || socket.handshake.address;
     }
   }
@@ -136,7 +144,9 @@ function canCreateLobby(ip: string): boolean {
 }
 
 function sanitizeName(name: unknown): string {
-  return String(name).slice(0, 15).replace(/[<>'"&]/g, '');
+  return String(name)
+    .slice(0, 15)
+    .replace(/[<>'"&]/g, "");
 }
 
 // Security logging
@@ -211,12 +221,11 @@ function cleanupSocket(socket: Socket): void {
 }
 
 // Heartbeat monitoring: prune dead connections every 5 seconds
-setInterval(() => {
-  const now = Date.now();
+function runHeartbeatCleanup(now = Date.now()): void {
   for (const [socketId, lastBeat] of lastHeartbeats) {
     if (now - lastBeat > HEARTBEAT_TIMEOUT) {
       const socket = io.sockets.sockets.get(socketId);
-      logSecurity('warn', 'Heartbeat timeout', { socketId, lastBeat, elapsed: now - lastBeat });
+      logSecurity("warn", "Heartbeat timeout", { socketId, lastBeat, elapsed: now - lastBeat });
       if (socket) {
         cleanupSocket(socket);
         socket.disconnect(true);
@@ -236,14 +245,18 @@ setInterval(() => {
       }
     }
   }
-}, HEARTBEAT_INTERVAL);
+}
+
+setInterval(runHeartbeatCleanup, HEARTBEAT_INTERVAL);
 
 // Periodic cleanup of empty lobbies and stale rate-limit entries
-setInterval(() => {
-  const now = Date.now();
-  Object.keys(lobbies).forEach(id => {
-    if (Object.keys(lobbies[id].participants).length === 0 && (now - lobbies[id].createdAt > 300_000)) {
-      logSecurity('info', 'Empty lobby cleaned up', { lobbyId: id });
+function runPeriodicCleanup(now = Date.now()): void {
+  Object.keys(lobbies).forEach((id) => {
+    if (
+      Object.keys(lobbies[id].participants).length === 0 &&
+      now - lobbies[id].createdAt > 300_000
+    ) {
+      logSecurity("info", "Empty lobby cleaned up", { lobbyId: id });
       delete lobbies[id];
     }
   });
@@ -252,17 +265,20 @@ setInterval(() => {
       lobbyCreationTracker.delete(ip);
     }
   }
-}, 60_000);
+}
+
+setInterval(runPeriodicCleanup, 60_000);
 
 function getLobbyState(lobbyId: string, viewerSocketId: string | null = null): LobbyState | null {
   const lobby = lobbies[lobbyId];
   if (!lobby) return null;
   const rawParticipants = Object.values(lobby.participants);
-  const nonPO = rawParticipants.filter(p => !p.po);
-  const canReveal = !lobby.revealed && nonPO.length > 0 && nonPO.every(p => p.estimate !== null);
-  const participants: ClientParticipant[] = rawParticipants.map(p => ({
+  const nonPO = rawParticipants.filter((p) => !p.po);
+  const canReveal = !lobby.revealed && nonPO.length > 0 && nonPO.every((p) => p.estimate !== null);
+  const participants: ClientParticipant[] = rawParticipants.map((p) => ({
     ...p,
-    estimate: lobby.revealed || p.id === viewerSocketId ? p.estimate : (p.estimate !== null ? '✓' : '?')
+    estimate:
+      lobby.revealed || p.id === viewerSocketId ? p.estimate : p.estimate !== null ? "✓" : "?",
   }));
   return { lobbyId: lobby.id, id: lobby.id, revealed: lobby.revealed, participants, canReveal };
 }
@@ -275,20 +291,24 @@ function broadcast(lobbyId: string): void {
   for (const socketId of room) {
     const state = getLobbyState(lobbyId, socketId);
     const socket = io.sockets.sockets.get(socketId);
-    if (socket && state) socket.emit('state', state);
+    if (socket && state) socket.emit("state", state);
   }
 }
 
-io.on('connection', (socket: Socket) => {
+io.on("connection", (socket: Socket) => {
   lastHeartbeats.set(socket.id, Date.now());
 
-  socket.on('join', (lobbyId: unknown, cb: unknown) => {
-    const reply = typeof cb === 'function' ? (cb as (id: string | null) => void) : (): void => {};
+  socket.on("join", (lobbyId: unknown, cb: unknown) => {
+    const reply = typeof cb === "function" ? (cb as (id: string | null) => void) : (): void => {};
 
-    const check = socketLimiter.isAllowed(socket.id, 'join', 10, 60_000);
+    const check = socketLimiter.isAllowed(socket.id, "join", 10, 60_000);
     if (!check.allowed) {
-      socket.emit('rate-limited', { event: 'join', retryAfter: check.retryAfter });
-      logSecurity('warn', 'Rate limit exceeded', { socketId: socket.id, event: 'join', retryAfter: check.retryAfter });
+      socket.emit("rate-limited", { event: "join", retryAfter: check.retryAfter });
+      logSecurity("warn", "Rate limit exceeded", {
+        socketId: socket.id,
+        event: "join",
+        retryAfter: check.retryAfter,
+      });
       return reply(null);
     }
 
@@ -297,24 +317,49 @@ io.on('connection', (socket: Socket) => {
     if (!resolvedLobbyId || !isValidLobbyId(resolvedLobbyId)) {
       const clientIp = getClientIp(socket);
       if (!canCreateLobby(clientIp)) {
-        logSecurity('warn', 'Lobby creation rate limit exceeded', { socketId: socket.id, ip: clientIp });
+        logSecurity("warn", "Lobby creation rate limit exceeded", {
+          socketId: socket.id,
+          ip: clientIp,
+        });
         return reply(null);
       }
       resolvedLobbyId = randomUUID();
-      lobbies[resolvedLobbyId] = { id: resolvedLobbyId, participants: Object.create(null), revealed: false, createdAt: Date.now() };
-      logSecurity('info', 'Lobby created', { lobbyId: resolvedLobbyId, creatorSocketId: socket.id, ip: clientIp });
+      lobbies[resolvedLobbyId] = {
+        id: resolvedLobbyId,
+        participants: Object.create(null),
+        revealed: false,
+        createdAt: Date.now(),
+      };
+      logSecurity("info", "Lobby created", {
+        lobbyId: resolvedLobbyId,
+        creatorSocketId: socket.id,
+        ip: clientIp,
+      });
     } else if (!lobbies[resolvedLobbyId]) {
       const clientIp = getClientIp(socket);
       if (!canCreateLobby(clientIp)) {
-        logSecurity('warn', 'Lobby creation rate limit exceeded', { socketId: socket.id, ip: clientIp, lobbyId: resolvedLobbyId });
+        logSecurity("warn", "Lobby creation rate limit exceeded", {
+          socketId: socket.id,
+          ip: clientIp,
+          lobbyId: resolvedLobbyId,
+        });
         return reply(null);
       }
-      lobbies[resolvedLobbyId] = { id: resolvedLobbyId, participants: Object.create(null), revealed: false, createdAt: Date.now() };
-      logSecurity('info', 'Lobby created from link', { lobbyId: resolvedLobbyId, creatorSocketId: socket.id, ip: clientIp });
+      lobbies[resolvedLobbyId] = {
+        id: resolvedLobbyId,
+        participants: Object.create(null),
+        revealed: false,
+        createdAt: Date.now(),
+      };
+      logSecurity("info", "Lobby created from link", {
+        lobbyId: resolvedLobbyId,
+        creatorSocketId: socket.id,
+        ip: clientIp,
+      });
     }
 
     if (Object.keys(lobbies[resolvedLobbyId].participants).length >= MAX_PARTICIPANTS) {
-      logSecurity('warn', 'Lobby full', { lobbyId: resolvedLobbyId, socketId: socket.id });
+      logSecurity("warn", "Lobby full", { lobbyId: resolvedLobbyId, socketId: socket.id });
       return reply(null);
     }
 
@@ -328,24 +373,24 @@ io.on('connection', (socket: Socket) => {
 
     lobbies[resolvedLobbyId].participants[socket.id] = {
       id: socket.id,
-      name: 'Anonymous',
+      name: "Anonymous",
       estimate: null,
-      po: false
+      po: false,
     };
     broadcast(resolvedLobbyId);
     reply(resolvedLobbyId);
   });
 
-  socket.on('heartbeat', () => {
-    const check = socketLimiter.isAllowed(socket.id, 'heartbeat', 60, 60_000);
+  socket.on("heartbeat", () => {
+    const check = socketLimiter.isAllowed(socket.id, "heartbeat", 60, 60_000);
     if (!check.allowed) return;
     lastHeartbeats.set(socket.id, Date.now());
   });
 
-  socket.on('setName', (lobbyId: unknown, name: unknown) => {
-    const check = socketLimiter.isAllowed(socket.id, 'setName', 10, 10_000);
+  socket.on("setName", (lobbyId: unknown, name: unknown) => {
+    const check = socketLimiter.isAllowed(socket.id, "setName", 10, 10_000);
     if (!check.allowed) {
-      socket.emit('rate-limited', { event: 'setName', retryAfter: check.retryAfter });
+      socket.emit("rate-limited", { event: "setName", retryAfter: check.retryAfter });
       return;
     }
     const id = lobbyId as string;
@@ -354,10 +399,10 @@ io.on('connection', (socket: Socket) => {
     broadcast(id);
   });
 
-  socket.on('setPO', (lobbyId: unknown, po: unknown) => {
-    const check = socketLimiter.isAllowed(socket.id, 'setPO', 10, 10_000);
+  socket.on("setPO", (lobbyId: unknown, po: unknown) => {
+    const check = socketLimiter.isAllowed(socket.id, "setPO", 10, 10_000);
     if (!check.allowed) {
-      socket.emit('rate-limited', { event: 'setPO', retryAfter: check.retryAfter });
+      socket.emit("rate-limited", { event: "setPO", retryAfter: check.retryAfter });
       return;
     }
     const id = lobbyId as string;
@@ -366,50 +411,50 @@ io.on('connection', (socket: Socket) => {
     broadcast(id);
   });
 
-  socket.on('estimate', (lobbyId: unknown, value: unknown) => {
-    const check = socketLimiter.isAllowed(socket.id, 'estimate', 10, 5_000);
+  socket.on("estimate", (lobbyId: unknown, value: unknown) => {
+    const check = socketLimiter.isAllowed(socket.id, "estimate", 10, 5_000);
     if (!check.allowed) {
-      socket.emit('rate-limited', { event: 'estimate', retryAfter: check.retryAfter });
+      socket.emit("rate-limited", { event: "estimate", retryAfter: check.retryAfter });
       return;
     }
     const id = lobbyId as string;
     if (!id || !lobbies[id]) return;
     if (lobbies[id].revealed) return;
-    if (typeof value !== 'number' || !ALLOWED_ESTIMATES.includes(value)) {
-      logSecurity('warn', 'Invalid estimate rejected', { socketId: socket.id, lobbyId: id, value });
+    if (typeof value !== "number" || !ALLOWED_ESTIMATES.includes(value)) {
+      logSecurity("warn", "Invalid estimate rejected", { socketId: socket.id, lobbyId: id, value });
       return;
     }
     const participant = lobbies[id].participants[socket.id];
     if (!participant) return;
     if (participant.po) {
-      logSecurity('warn', 'PO estimate rejected', { socketId: socket.id, lobbyId: id });
+      logSecurity("warn", "PO estimate rejected", { socketId: socket.id, lobbyId: id });
       return;
     }
     participant.estimate = value;
     broadcast(id);
   });
 
-  socket.on('reveal', (lobbyId: unknown) => {
-    const check = socketLimiter.isAllowed(socket.id, 'reveal', 5, 10_000);
+  socket.on("reveal", (lobbyId: unknown) => {
+    const check = socketLimiter.isAllowed(socket.id, "reveal", 5, 10_000);
     if (!check.allowed) {
-      socket.emit('rate-limited', { event: 'reveal', retryAfter: check.retryAfter });
+      socket.emit("rate-limited", { event: "reveal", retryAfter: check.retryAfter });
       return;
     }
     const id = lobbyId as string;
     if (!id || !lobbies[id] || !lobbies[id].participants[socket.id]) return;
     const lobby = lobbies[id];
     if (lobby.revealed) return;
-    const nonPO = Object.values(lobby.participants).filter(p => !p.po);
-    if (nonPO.length === 0 || !nonPO.every(p => p.estimate !== null)) return;
+    const nonPO = Object.values(lobby.participants).filter((p) => !p.po);
+    if (nonPO.length === 0 || !nonPO.every((p) => p.estimate !== null)) return;
     lobby.revealed = true;
-    logSecurity('info', 'Lobby revealed', { lobbyId: id, socketId: socket.id });
+    logSecurity("info", "Lobby revealed", { lobbyId: id, socketId: socket.id });
     broadcast(id);
   });
 
-  socket.on('reset', (lobbyId: unknown) => {
-    const check = socketLimiter.isAllowed(socket.id, 'reset', 5, 10_000);
+  socket.on("reset", (lobbyId: unknown) => {
+    const check = socketLimiter.isAllowed(socket.id, "reset", 5, 10_000);
     if (!check.allowed) {
-      socket.emit('rate-limited', { event: 'reset', retryAfter: check.retryAfter });
+      socket.emit("rate-limited", { event: "reset", retryAfter: check.retryAfter });
       return;
     }
     const id = lobbyId as string;
@@ -417,13 +462,15 @@ io.on('connection', (socket: Socket) => {
     const lobby = lobbies[id];
     if (!lobby.revealed) return;
     lobby.revealed = false;
-    Object.values(lobby.participants).forEach(p => { p.estimate = null; });
-    logSecurity('info', 'Lobby reset', { lobbyId: id, socketId: socket.id });
+    Object.values(lobby.participants).forEach((p) => {
+      p.estimate = null;
+    });
+    logSecurity("info", "Lobby reset", { lobbyId: id, socketId: socket.id });
     broadcast(id);
   });
 
-  socket.on('disconnect', () => {
-    logSecurity('info', 'Socket disconnected', { socketId: socket.id });
+  socket.on("disconnect", () => {
+    logSecurity("info", "Socket disconnected", { socketId: socket.id });
     cleanupSocket(socket);
   });
 });
@@ -440,13 +487,18 @@ export {
   isValidLobbyId,
   sanitizeName,
   getClientIp,
+  canCreateLobby,
+  runHeartbeatCleanup,
+  runPeriodicCleanup,
+  lastHeartbeats,
+  socketLobbies,
   ALLOWED_ESTIMATES,
   MAX_PARTICIPANTS,
   HEARTBEAT_INTERVAL,
   HEARTBEAT_TIMEOUT,
-  type LobbyState
+  type LobbyState,
 };
 
-if (process.env.AUTO_START !== 'false') {
+if (process.env.AUTO_START !== "false") {
   httpServer.listen(PORT, () => console.log(`Quick Poker running on port ${PORT}`));
 }
