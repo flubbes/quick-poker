@@ -1,14 +1,30 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    globals: false,
-    environment: 'node',
-    testTimeout: 10000,
-    hookTimeout: 10000,
-    pool: 'forks',
-    env: {
-      AUTO_START: 'false'
-    }
-  }
+    projects: [
+      {
+        test: {
+          name: "server",
+          environment: "node",
+          include: ["tests/server.test.ts"],
+          pool: "forks",
+          testTimeout: 10000,
+          hookTimeout: 10000,
+          env: {
+            AUTO_START: "false",
+          },
+        },
+      },
+      {
+        test: {
+          name: "frontend",
+          environment: "jsdom",
+          include: ["tests/frontend.test.ts"],
+          testTimeout: 10000,
+          hookTimeout: 10000,
+        },
+      },
+    ],
+  },
 });
