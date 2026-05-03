@@ -97,4 +97,4 @@ jobs:
 
       - name: Cleanup container
         if: always()
-        run: docker stop qp-smoke && docker rm qp-smoke
+        run: docker stop qp-smoke || true && docker rm qp-smoke || true
