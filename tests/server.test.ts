@@ -1136,7 +1136,7 @@ describe("getClientIp", () => {
     expect(getClientIp(socket)).toBe("127.0.0.1");
   });
 
-  it("returns last IP from X-Forwarded-When when TRUST_PROXY is true", () => {
+  it("returns last IP from X-Forwarded-For when TRUST_PROXY is true", () => {
     const originalEnv = process.env.TRUST_PROXY;
     process.env.TRUST_PROXY = "true";
 
