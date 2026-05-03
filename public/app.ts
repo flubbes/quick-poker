@@ -95,6 +95,9 @@ export const appOptions = {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
     }
+    if (this.rateLimitTimer) {
+      clearTimeout(this.rateLimitTimer);
+    }
   },
   methods: {
     updateName(this: AppData): void {
