@@ -12,14 +12,14 @@ All commits **must** follow the [Conventional Commits](https://www.conventionalc
 
 ## Allowed Types
 
-| Type       | Use when…                                                  |
-|------------|------------------------------------------------------------|
-| `feat:`    | Adding a new feature or behavior.                          |
-| `fix:`     | Fixing a bug.                                              |
-| `docs:`    | Documentation-only changes.                                |
-| `test:`    | Adding or updating tests.                                  |
-| `refactor:`| Code change that neither fixes a bug nor adds a feature.   |
-| `chore:`   | Tooling, dependency updates, or other maintenance tasks.   |
+| Type        | Use when…                                                |
+| ----------- | -------------------------------------------------------- |
+| `feat:`     | Adding a new feature or behavior.                        |
+| `fix:`      | Fixing a bug.                                            |
+| `docs:`     | Documentation-only changes.                              |
+| `test:`     | Adding or updating tests.                                |
+| `refactor:` | Code change that neither fixes a bug nor adds a feature. |
+| `chore:`    | Tooling, dependency updates, or other maintenance tasks. |
 
 ## Examples
 
