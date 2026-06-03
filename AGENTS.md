@@ -2,12 +2,53 @@
 
 Single-container planning poker app for remote teams. Works in Firefox and Chromium-based browsers.
 
+## Living Documentation
+
+This file is maintained by opencode alongside code changes. After any non-trivial code change, before considering the task done, review and update the relevant docs so they stay in sync:
+
+- **AGENTS.md** — if a new command, module, test category, convention, or gotcha is introduced.
+- **README.md** — if user-facing commands, ports, or behavior change.
+- **reviews/todo.md** — check off completed items, add new ones for deferred work.
+- **privacy-policy.md** — keep section placeholders flagged until filled in.
+
+Doc updates ship in the same commit (or PR) as the code change that motivated them. Never leave docs out of sync with the code they describe.
+
+## README Structure
+
+`README.md` is the user-facing entry point and must follow this order:
+
+1. **What the app is** — one short paragraph: what it does and who it's for.
+2. **How to use it** — short steps and the URL/local address where it runs.
+3. **Self-hosting (Docker)** — short section: `docker build` + `docker run`, plus the `TRUST_PROXY` env if relevant.
+4. **Development** — covers: tech stack, running locally, developing, troubleshooting.
+
+When editing `README.md`, keep this order. New sections slot in; the order does not change.
+
 ## Architecture
 
 - **Backend**: Node.js + Express + Socket.IO
 - **Frontend**: Vue 3 (global build, served from container)
 - **Styling**: Vanilla CSS, dark mode only
 - **Container**: Single Docker container
+
+## Running Locally
+
+```bash
+npm start          # esbuild frontend + tsx server on PORT (default 3000)
+npm run dev        # alias for npm start
+```
+
+Open `http://localhost:3000` — a new lobby is created on every visit.
+
+Notes:
+
+- The server does **not** hot-reload. Restart with `npm start` after code changes to pick them up.
+- `AUTO_START=false` is for tests only. Do **not** set it for local runs — the server will silently fail to bind.
+
+## Known Gotchas
+
+- `AUTO_START=false` prevents the server from binding on module load. It is used by `tests/server.test.ts` to run the server in-process. Do not set it for `npm start`.
+- The running server keeps serving its in-memory code. After a `git pull`, `git merge`, or PR merge, restart the server to pick up changes.
 
 ## Requirements
 
@@ -83,7 +124,7 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 - **Authorization / Security Regressions**: non-participants blocked from reveal, reset, setName, setPO, estimate; reveal blocked until all non-POs estimated
 - **Multi-Lobby**: parallel lobby membership
 - **HTTP Layer**: static files, security headers, HTTP 429 rate limit
-- **Utilities**: `isValidLobbyId`, `sanitizeName`
+- **Utilities**: `isValidLobbyId`, `sanitizeName`, `getClientIp` (with `TRUST_PROXY` env)
 
 ### After Any Code Change
 
