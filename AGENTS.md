@@ -75,6 +75,8 @@ Notes:
 
 ### Disconnect Handling
 
+For the full design rationale and trade-offs, see [docs/adr/0001-disconnect-reconnect-semantics.md](docs/adr/0001-disconnect-reconnect-semantics.md). The contract:
+
 1. The client shows a yellow **You are offline. Retrying to reconnect in Xs…** countdown banner as soon as it has reason to believe the network is down — whichever fires first:
    - The browser fires the `offline` event (e.g. Chrome dev-tools "Offline" toggle, OS losing Wi-Fi). This is the fast path and bypasses the 5 s grace period below.
    - The socket fires `disconnect` and stays disconnected for **5 seconds**.
