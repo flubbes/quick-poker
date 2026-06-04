@@ -9,6 +9,7 @@ interface MockSocket {
   emit: ReturnType<typeof vi.fn>;
   on: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
+  connect: ReturnType<typeof vi.fn>;
   _listeners: Record<string, Function[]>;
   _callbacks: Record<string, Function>;
   trigger: (event: string, ...args: any[]) => void;
@@ -33,6 +34,7 @@ function createMockSocket(): MockSocket {
       listeners[event].push(handler);
     }),
     disconnect: vi.fn(),
+    connect: vi.fn(),
     _listeners: listeners,
     _callbacks: callbacks,
     trigger(event: string, ...args: any[]) {
@@ -48,6 +50,7 @@ function createMockSocket(): MockSocket {
 
 let mockSocket: MockSocket;
 let localStorageData: Record<string, string>;
+let sessionStorageData: Record<string, string>;
 let originalLocation: typeof window.location;
 
 // Read and cache the app template from index.html
@@ -62,6 +65,7 @@ describe("Frontend", () => {
   beforeEach(() => {
     mockSocket = createMockSocket();
     localStorageData = {};
+    sessionStorageData = {};
 
     (globalThis as any).io = vi.fn(() => mockSocket);
     (globalThis as any).Vue = { createApp: vi.fn(() => ({ mount: vi.fn() })) };
@@ -71,6 +75,16 @@ describe("Frontend", () => {
         getItem: (k: string) => localStorageData[k] || null,
         setItem: (k: string, v: string) => {
           localStorageData[k] = v;
+        },
+      },
+      writable: true,
+    });
+
+    Object.defineProperty(globalThis, "sessionStorage", {
+      value: {
+        getItem: (k: string) => sessionStorageData[k] || null,
+        setItem: (k: string, v: string) => {
+          sessionStorageData[k] = v;
         },
       },
       writable: true,
@@ -90,6 +104,7 @@ describe("Frontend", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
     document.body.innerHTML = "";
     Object.defineProperty(window, "location", {
       writable: true,
@@ -108,11 +123,45 @@ describe("Frontend", () => {
   // MOUNT & JOIN
   // ========================================================================
 
-  it("mounts and emits join on mounted", async () => {
+  it("mounts and emits join on mounted with a stable userId", async () => {
     const appOptions = await loadAppOptions();
     mount(appOptions);
     await flushPromises();
-    expect(mockSocket.emit).toHaveBeenCalledWith("join", "", expect.any(Function));
+    expect(mockSocket.emit).toHaveBeenCalledWith(
+      "join",
+      "",
+      expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      expect.any(Function),
+    );
+  });
+
+  it("reuses the userId from localStorage across mounts", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+    const firstUserId = localStorageData["qp-user-id"];
+    expect(firstUserId).toMatch(/^[0-9a-f-]{36}$/i);
+
+    wrapper.unmount();
+    const wrapper2 = mount(appOptions);
+    await flushPromises();
+    expect(localStorageData["qp-user-id"]).toBe(firstUserId);
+    wrapper2.unmount();
+  });
+
+  it("reuses the per-tab sessionId from sessionStorage across mounts", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+    const firstSessionId = sessionStorageData["qp-session-id"];
+    expect(firstSessionId).toMatch(/^[0-9a-f-]{36}$/i);
+
+    wrapper.unmount();
+    const wrapper2 = mount(appOptions);
+    await flushPromises();
+    expect(sessionStorageData["qp-session-id"]).toBe(firstSessionId);
+    wrapper2.unmount();
   });
 
   it("sets location hash and emits setName after join callback", async () => {
@@ -179,8 +228,8 @@ describe("Frontend", () => {
       id: "lobby-1",
       revealed: false,
       participants: [
-        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false },
-        { id: "other-id", name: "Bob", estimate: null, po: true },
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+        { id: "other-id", name: "Bob", estimate: null, po: true, connected: true },
       ],
       canReveal: false,
     });
@@ -205,9 +254,9 @@ describe("Frontend", () => {
       id: "lobby-1",
       revealed: false,
       participants: [
-        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false },
-        { id: "other-id", name: "Bob", estimate: "✓", po: false },
-        { id: "third-id", name: "Carol", estimate: "?", po: false },
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+        { id: "other-id", name: "Bob", estimate: "✓", po: false, connected: true },
+        { id: "third-id", name: "Carol", estimate: "?", po: false, connected: true },
       ],
       canReveal: false,
     });
@@ -232,8 +281,8 @@ describe("Frontend", () => {
       id: "lobby-1",
       revealed: true,
       participants: [
-        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false },
-        { id: "other-id", name: "Bob", estimate: 8, po: false },
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+        { id: "other-id", name: "Bob", estimate: 8, po: false, connected: true },
       ],
       canReveal: true,
     });
@@ -256,7 +305,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-2",
       id: "lobby-2",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: null, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -276,7 +327,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: null, po: true }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: true, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -301,7 +354,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: null, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -322,7 +377,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: null, po: true }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: true, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -342,7 +399,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: null, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -365,7 +424,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: true,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: 5, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+      ],
       canReveal: true,
     });
     await flushPromises();
@@ -386,7 +447,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: 5, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -412,7 +475,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: 5, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+      ],
       canReveal: true,
     });
     await flushPromises();
@@ -434,7 +499,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: null, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
+      ],
       canReveal: false,
     });
     await flushPromises();
@@ -455,7 +522,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: true,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: 5, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+      ],
       canReveal: true,
     });
     await flushPromises();
@@ -477,7 +546,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: false,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: 5, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+      ],
       canReveal: true,
     });
     await flushPromises();
@@ -498,7 +569,9 @@ describe("Frontend", () => {
       lobbyId: "lobby-1",
       id: "lobby-1",
       revealed: true,
-      participants: [{ id: "mock-socket-id", name: "Alice", estimate: 5, po: false }],
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+      ],
       canReveal: true,
     });
     await flushPromises();
@@ -619,5 +692,453 @@ describe("Frontend", () => {
     wrapper.unmount();
     expect(clearIntervalSpy).toHaveBeenCalled();
     clearIntervalSpy.mockRestore();
+  });
+
+  // ========================================================================
+  // DISCONNECT HANDLING
+  // ========================================================================
+
+  it("does not show reconnecting banner immediately on disconnect", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.connected = false;
+    mockSocket.trigger("disconnect");
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+    expect((wrapper.vm as any).disconnected).toBe(false);
+  });
+
+  it("shows reconnecting banner after 5 seconds of being disconnected", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.connected = false;
+    mockSocket.trigger("disconnect");
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+
+    await new Promise((r) => setTimeout(r, 5100));
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+    expect((wrapper.vm as any).disconnected).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("counts down to the next automatic reconnect attempt", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+
+    await new Promise((r) => setTimeout(r, 1100));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 4s");
+
+    await new Promise((r) => setTimeout(r, 4100));
+    await flushPromises();
+    expect(connectSpy).toHaveBeenCalled();
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+
+    wrapper.unmount();
+  });
+
+  it("cancels pending disconnect banner when socket reconnects", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.connected = false;
+    mockSocket.trigger("disconnect");
+    await flushPromises();
+
+    // Reconnect before the 5s timer fires
+    mockSocket.connected = true;
+    mockSocket.trigger("connect");
+    await flushPromises();
+
+    await new Promise((r) => setTimeout(r, 5100));
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+  });
+
+  it("banner has no Reconnect button — auto-reconnect only", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+
+    const banner = wrapper.find(".reconnecting-banner");
+    expect(banner.exists()).toBe(true);
+    expect(banner.find("button").exists()).toBe(false);
+    expect(banner.text()).toContain("offline");
+    expect(banner.text()).toContain("Retrying");
+    expect(banner.text()).toContain("in 5s");
+    wrapper.unmount();
+  });
+
+  it("rejoins the lobby when the socket reconnects after a disconnect", async () => {
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    (mockSocket.emit as ReturnType<typeof vi.fn>).mockClear();
+
+    mockSocket.connected = false;
+    mockSocket.trigger("disconnect");
+    await flushPromises();
+
+    mockSocket.connected = true;
+    mockSocket.trigger("connect");
+    await flushPromises();
+
+    expect(mockSocket.emit).toHaveBeenCalledWith(
+      "join",
+      "lobby-1",
+      expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      expect.stringMatching(/^[0-9a-f-]{36}$/i),
+      expect.any(Function),
+    );
+  });
+
+  it("renders ghost participants with a ghost class", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: 5, po: false, connected: true },
+        { id: "other-id", name: "Bob", estimate: null, po: false, connected: false },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+
+    const cards = wrapper.findAll(".card");
+    expect(cards[0].classes()).not.toContain("ghost");
+    expect(cards[1].classes()).toContain("ghost");
+  });
+
+  it("shows reconnecting banner immediately when the browser fires the offline event", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+    expect((wrapper.vm as any).disconnected).toBe(false);
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+    expect((wrapper.vm as any).disconnected).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("offline event cancels the pending 5s socket-disconnect timer", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.connected = false;
+    mockSocket.trigger("disconnect");
+    await flushPromises();
+
+    // Offline event should show the banner right away, not after 5s
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
+
+    // Reconnect before 5s elapses
+    mockSocket.connected = true;
+    mockSocket.trigger("connect");
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+
+    // Wait past the 5s threshold - the (now cleared) timer must NOT fire
+    await new Promise((r) => setTimeout(r, 5100));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+  });
+
+  it("proactively reconnects the socket when the browser fires the online event", async () => {
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    window.dispatchEvent(new Event("online"));
+    expect(connectSpy).toHaveBeenCalled();
+  });
+
+  it("removes the offline/online listeners on unmount", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    const removeSpy = vi.spyOn(window, "removeEventListener");
+    wrapper.unmount();
+    const events = removeSpy.mock.calls.map((c) => c[0]);
+    expect(events).toContain("offline");
+    expect(events).toContain("online");
+    removeSpy.mockRestore();
+  });
+
+  // ------------------------------------------------------------------------
+  // Stale-transport / countdown hardening
+  // ------------------------------------------------------------------------
+
+  it("offline forces socket.disconnect() so emits don't enqueue on a stale transport", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const disconnectSpy = mockSocket.disconnect as ReturnType<typeof vi.fn>;
+    disconnectSpy.mockClear();
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+
+    expect(disconnectSpy).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("online calls socket.connect() unconditionally, even when the local flag still says connected", async () => {
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    mockSocket.connected = true;
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    window.dispatchEvent(new Event("online"));
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("countdown is cleared on successful connect — no second auto-retry cycle", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+
+    // Tick halfway through the 5s window
+    vi.advanceTimersByTime(3_000);
+    await flushPromises();
+
+    // Real socket recovers before the next auto-retry
+    mockSocket.connected = true;
+    mockSocket.trigger("connect");
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+
+    // 7s after the recovery — there should be no second cycle.
+    vi.advanceTimersByTime(7_000);
+    await flushPromises();
+    expect(connectSpy).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
+  it("repeated offline events do not stack reconnect intervals", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    window.dispatchEvent(new Event("offline"));
+    window.dispatchEvent(new Event("offline"));
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+
+    // 5.5s: the first interval has fired exactly once, the duplicate
+    // dispatches must not have queued more.
+    vi.advanceTimersByTime(5_500);
+    await flushPromises();
+
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("synthetic disconnect while already reconnecting does not start a second 5s timer", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    // Force the app into the reconnecting state via offline
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+    expect((wrapper.vm as any).disconnected).toBe(true);
+
+    // Now a synthetic disconnect from the transport must be ignored —
+    // the existing 5s socket-disconnect timer is guarded by the
+    // `if (this.disconnected) return;` early-out. The `disconnectTimer`
+    // field must stay null so we know no new setTimeout was queued.
+    mockSocket.connected = false;
+    mockSocket.trigger("disconnect");
+    await flushPromises();
+    expect((wrapper.vm as any).disconnectTimer).toBeNull();
+
+    wrapper.unmount();
+  });
+
+  it("page is quiet at load: no banner, no countdown, no auto-reconnect attempts", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+    expect((wrapper.vm as any).disconnected).toBe(false);
+    expect((wrapper.vm as any).reconnectCountdown).toBe(0);
+
+    const connectSpy = mockSocket.connect as ReturnType<typeof vi.fn>;
+    connectSpy.mockClear();
+    vi.advanceTimersByTime(10_000);
+    await flushPromises();
+    expect(connectSpy).not.toHaveBeenCalled();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("different mount gets a different per-tab sessionId but the same persistent userId", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper1 = mount(appOptions);
+    await flushPromises();
+    const userId1 = localStorageData["qp-user-id"];
+    const sessionId1 = sessionStorageData["qp-session-id"];
+
+    // Capture the join payload emitted from the first mount.
+    const joinCallsAfterFirst = (mockSocket.emit.mock.calls as unknown[][]).filter(
+      (call) => call[0] === "join",
+    );
+    expect(joinCallsAfterFirst).toHaveLength(1);
+    const firstJoin = joinCallsAfterFirst[0];
+    const firstJoinUserId = firstJoin[2] as string;
+    const firstJoinSessionId = firstJoin[3] as string;
+    expect(firstJoinUserId).toBe(userId1);
+
+    wrapper1.unmount();
+
+    // Wipe sessionStorage so the second mount generates a fresh sessionId.
+    sessionStorageData = {};
+
+    const wrapper2 = mount(appOptions);
+    await flushPromises();
+    expect(localStorageData["qp-user-id"]).toBe(userId1); // persistent
+    expect(sessionStorageData["qp-session-id"]).not.toBe(sessionId1); // new per-tab
+
+    const joinCallsAfterSecond = (mockSocket.emit.mock.calls as unknown[][]).filter(
+      (call) => call[0] === "join",
+    );
+    expect(joinCallsAfterSecond).toHaveLength(2);
+    const secondJoin = joinCallsAfterSecond[1];
+    const secondJoinUserId = secondJoin[2] as string;
+    const secondJoinSessionId = secondJoin[3] as string;
+    expect(secondJoinUserId).toBe(firstJoinUserId);
+    expect(secondJoinSessionId).not.toBe(firstJoinSessionId);
+
+    wrapper2.unmount();
+  });
+
+  it("banner copy is exactly 'You are offline. Retrying to reconnect in 4s…' after one tick", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").text()).toBe(
+      "You are offline. Retrying to reconnect in 5s…",
+    );
+
+    vi.advanceTimersByTime(1_100);
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").text()).toBe(
+      "You are offline. Retrying to reconnect in 4s…",
+    );
+
+    wrapper.unmount();
   });
 });

@@ -66,12 +66,29 @@ Notes:
 2. Until someone clicks **Reveal**, all cards stay hidden.
 3. The first person to estimate can still change their mind until reveal.
 4. Everyone can change their estimate freely before reveal — no one can see others' choices.
-5. When **all non-PO participants have estimated**, the **Reveal** button becomes active.
+5. When **all active (connected) non-PO participants have estimated**, the **Reveal** button becomes active.
 6. When **Reveal** is pressed:
    - All cards are revealed.
    - No re-estimation is possible.
    - The **Reveal** button turns into a **Reset** button.
 7. Clicking **Reset** starts a new estimation round (all cards hidden, estimates cleared).
+
+### Disconnect Handling
+
+1. The client shows a yellow **You are offline. Retrying to reconnect in Xs…** countdown banner as soon as it has reason to believe the network is down — whichever fires first:
+   - The browser fires the `offline` event (e.g. Chrome dev-tools "Offline" toggle, OS losing Wi-Fi). This is the fast path and bypasses the 5 s grace period below.
+   - The socket fires `disconnect` and stays disconnected for **5 seconds**.
+2. The banner is informational only — the client never exposes a manual **Reconnect** button. Reconnection runs automatically in the background.
+3. The page is intentionally **quiet at load** when `navigator.onLine === false` — the 5 s socket-disconnect fallback covers it.
+4. On the browser's `offline` event, the client forces the socket into a disconnected state locally so button clicks do not enqueue against a stale transport.
+5. While offline, the client calls `socket.connect()` every 5 seconds and the banner counts down to the next attempt.
+6. On the browser's `online` event the client proactively calls `socket.connect()` immediately, then continues the countdown loop until the actual socket `connect` event arrives.
+7. When the socket reconnects, the client automatically re-joins the lobby and restores the name and PO status from `localStorage`. The banner is cleared by the actual `connect` event, not by `online`, so the rejoin path always runs.
+8. The client sends a persistent `qp-user-id` (localStorage) plus a per-tab `qp-session-id` (sessionStorage). On join, the server removes stale participants from the same user/session even before the heartbeat timeout marks the old socket as a ghost; active participants from other tabs with the same `qp-user-id` are kept.
+9. On the server, disconnected participants are kept in the lobby as **ghosts** (`connected: false`) for `GHOST_TIMEOUT` (60s) so others can see who dropped off.
+10. The server uses a **7 s heartbeat timeout** (`HEARTBEAT_TIMEOUT`): with the 5 s client heartbeat cadence, peers should see the ghost within ~7-12 s of a real disconnect. A single delayed heartbeat can briefly mark a healthy client as a ghost — acceptable tradeoff for faster visibility.
+11. Disconnected non-PO participants are excluded from the **Reveal** check (they cannot estimate).
+12. Ghost participants are rendered with reduced opacity and a strikethrough name (`(offline)`) on other clients' screens.
 
 ### Product Owner (PO) Role
 
@@ -119,6 +136,9 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 - **Estimation Flow**: allowed values, value whitelist, changing mind before reveal, reveal preconditions, reset behavior, multi-round support
 - **PO Role**: self-assignment, exclusion from reveal condition, server-side estimate blocking
 - **State Redaction**: hidden votes show `✓`/`?`, own estimate visible, no raw value leakage before reveal
+- **Connection Status**: ghost participants marked `connected: false`, `canReveal` ignores ghosts, grace-period cleanup via `GHOST_TIMEOUT`
+- **Rejoin Identity**: stable `qp-user-id` in localStorage plus per-tab `qp-session-id` in sessionStorage; stale participants from the same user/session are pruned on join; active participants from other tabs with the same `qp-user-id` are kept
+- **Browser Offline/Online Signals**: `offline` shows banner immediately with a retry countdown, `online` proactively calls `socket.connect()`
 - **Name Sanitization**: HTML metacharacter stripping, 15-char truncation
 - **Rate Limiting**: join, estimate, reveal, reset, setName per-socket limits
 - **Authorization / Security Regressions**: non-participants blocked from reveal, reset, setName, setPO, estimate; reveal blocked until all non-POs estimated

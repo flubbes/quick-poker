@@ -55,9 +55,12 @@ app.get("/vue.global.js", (_req: Request, res: Response) => {
 // Types
 interface Participant {
   id: string;
+  userId: string | null;
+  sessionId: string | null;
   name: string;
   estimate: number | null;
   po: boolean;
+  disconnectedAt: number | null;
 }
 
 interface Lobby {
@@ -91,6 +94,7 @@ interface ClientParticipant {
   name: string;
   estimate: number | string | null;
   po: boolean;
+  connected: boolean;
 }
 
 interface LobbyState {
@@ -105,13 +109,20 @@ const lobbies: Record<string, Lobby> = Object.create(null);
 const ALLOWED_ESTIMATES: readonly number[] = [0, 1, 2, 3, 5, 8, 13, 20, 40];
 const MAX_PARTICIPANTS = 50;
 const HEARTBEAT_INTERVAL = 5000;
-const HEARTBEAT_TIMEOUT = 30000;
+const HEARTBEAT_TIMEOUT = 7_000;
+const GHOST_TIMEOUT = 60_000;
 
 function isValidLobbyId(id: unknown): boolean {
   return (
     typeof id === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
   );
+}
+
+const USER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUserId(id: unknown): boolean {
+  return typeof id === "string" && id.length <= 64 && USER_ID_PATTERN.test(id);
 }
 
 function getClientIp(socket: Socket): string {
@@ -198,24 +209,32 @@ function getSocketLobbies(socketId: string): Set<string> {
   return socketLobbies.get(socketId) || new Set<string>();
 }
 
+function markParticipantGhosts(socket: Socket): string[] {
+  const socketId = socket.id;
+  const lobbiesToUpdate: string[] = [];
+  const lobbiesToClean = Array.from(getSocketLobbies(socketId));
+  socketLobbies.delete(socketId);
+  for (const lobbyId of lobbiesToClean) {
+    const lobby = lobbies[lobbyId];
+    if (!lobby) continue;
+    const participant = lobby.participants[socketId];
+    if (participant && participant.disconnectedAt === null) {
+      participant.disconnectedAt = Date.now();
+      lobbiesToUpdate.push(lobbyId);
+    }
+    socket.leave(lobbyId);
+  }
+  return lobbiesToUpdate;
+}
+
 function cleanupSocket(socket: Socket): void {
   const socketId = socket.id;
   socketLimiter.removeSocket(socketId);
   lastHeartbeats.delete(socketId);
 
-  const lobbiesToClean = Array.from(getSocketLobbies(socketId));
-  socketLobbies.delete(socketId);
+  const lobbiesToUpdate = markParticipantGhosts(socket);
 
-  for (const lobbyId of lobbiesToClean) {
-    const lobby = lobbies[lobbyId];
-    if (lobby) {
-      delete lobby.participants[socketId];
-    }
-    socket.leave(lobbyId);
-  }
-
-  // Broadcast after leaving rooms so stale sockets don't receive updates
-  for (const lobbyId of lobbiesToClean) {
+  for (const lobbyId of lobbiesToUpdate) {
     broadcast(lobbyId);
   }
 }
@@ -230,15 +249,13 @@ function runHeartbeatCleanup(now = Date.now()): void {
         cleanupSocket(socket);
         socket.disconnect(true);
       } else {
-        // Socket already gone from adapter; clean up our maps only
         socketLimiter.removeSocket(socketId);
         lastHeartbeats.delete(socketId);
-        const lobbiesToClean = Array.from(getSocketLobbies(socketId));
-        socketLobbies.delete(socketId);
-        for (const lobbyId of lobbiesToClean) {
+        for (const lobbyId of Object.keys(lobbies)) {
           const lobby = lobbies[lobbyId];
-          if (lobby) {
-            delete lobby.participants[socketId];
+          const participant = lobby?.participants[socketId];
+          if (participant && participant.disconnectedAt === null) {
+            participant.disconnectedAt = now;
             broadcast(lobbyId);
           }
         }
@@ -249,13 +266,20 @@ function runHeartbeatCleanup(now = Date.now()): void {
 
 setInterval(runHeartbeatCleanup, HEARTBEAT_INTERVAL);
 
-// Periodic cleanup of empty lobbies and stale rate-limit entries
+// Periodic cleanup of empty lobbies, ghost participants, and stale rate-limit entries
 function runPeriodicCleanup(now = Date.now()): void {
   Object.keys(lobbies).forEach((id) => {
-    if (
-      Object.keys(lobbies[id].participants).length === 0 &&
-      now - lobbies[id].createdAt > 300_000
-    ) {
+    const lobby = lobbies[id];
+    let changed = false;
+    for (const socketId of Object.keys(lobby.participants)) {
+      const participant = lobby.participants[socketId];
+      if (participant.disconnectedAt !== null && now - participant.disconnectedAt > GHOST_TIMEOUT) {
+        delete lobby.participants[socketId];
+        changed = true;
+      }
+    }
+    if (changed) broadcast(id);
+    if (Object.keys(lobby.participants).length === 0 && now - lobby.createdAt > 300_000) {
       logSecurity("info", "Empty lobby cleaned up", { lobbyId: id });
       delete lobbies[id];
     }
@@ -274,9 +298,14 @@ function getLobbyState(lobbyId: string, viewerSocketId: string | null = null): L
   if (!lobby) return null;
   const rawParticipants = Object.values(lobby.participants);
   const nonPO = rawParticipants.filter((p) => !p.po);
-  const canReveal = !lobby.revealed && nonPO.length > 0 && nonPO.every((p) => p.estimate !== null);
+  const activeNonPO = nonPO.filter((p) => p.disconnectedAt === null);
+  const canReveal =
+    !lobby.revealed && activeNonPO.length > 0 && activeNonPO.every((p) => p.estimate !== null);
   const participants: ClientParticipant[] = rawParticipants.map((p) => ({
-    ...p,
+    id: p.id,
+    name: p.name,
+    po: p.po,
+    connected: p.disconnectedAt === null,
     estimate:
       lobby.revealed || p.id === viewerSocketId ? p.estimate : p.estimate !== null ? "✓" : "?",
   }));
@@ -298,8 +327,17 @@ function broadcast(lobbyId: string): void {
 io.on("connection", (socket: Socket) => {
   lastHeartbeats.set(socket.id, Date.now());
 
-  socket.on("join", (lobbyId: unknown, cb: unknown) => {
-    const reply = typeof cb === "function" ? (cb as (id: string | null) => void) : (): void => {};
+  socket.on("join", (lobbyId: unknown, userId: unknown, sessionId: unknown, cb: unknown) => {
+    const replyArg =
+      typeof cb === "function"
+        ? cb
+        : typeof sessionId === "function"
+          ? sessionId
+          : typeof userId === "function"
+            ? userId
+            : null;
+    const reply =
+      typeof replyArg === "function" ? (replyArg as (id: string | null) => void) : (): void => {};
 
     const check = socketLimiter.isAllowed(socket.id, "join", 10, 60_000);
     if (!check.allowed) {
@@ -311,6 +349,9 @@ io.on("connection", (socket: Socket) => {
       });
       return reply(null);
     }
+
+    const resolvedUserId = isValidUserId(userId) ? (userId as string) : null;
+    const resolvedSessionId = isValidUserId(sessionId) ? (sessionId as string) : null;
 
     let resolvedLobbyId = lobbyId as string;
 
@@ -371,11 +412,29 @@ io.on("connection", (socket: Socket) => {
     }
     set.add(resolvedLobbyId);
 
+    if (resolvedUserId) {
+      for (const participantSocketId of Object.keys(lobbies[resolvedLobbyId].participants)) {
+        const existing = lobbies[resolvedLobbyId].participants[participantSocketId];
+        const sameRejoiningSession =
+          resolvedSessionId !== null &&
+          existing.userId === resolvedUserId &&
+          existing.sessionId === resolvedSessionId;
+        const sameUserGhost =
+          existing.userId === resolvedUserId && existing.disconnectedAt !== null;
+        if (sameRejoiningSession || sameUserGhost) {
+          delete lobbies[resolvedLobbyId].participants[participantSocketId];
+        }
+      }
+    }
+
     lobbies[resolvedLobbyId].participants[socket.id] = {
       id: socket.id,
+      userId: resolvedUserId,
+      sessionId: resolvedSessionId,
       name: "Anonymous",
       estimate: null,
       po: false,
+      disconnectedAt: null,
     };
     broadcast(resolvedLobbyId);
     reply(resolvedLobbyId);
@@ -444,8 +503,10 @@ io.on("connection", (socket: Socket) => {
     if (!id || !lobbies[id] || !lobbies[id].participants[socket.id]) return;
     const lobby = lobbies[id];
     if (lobby.revealed) return;
-    const nonPO = Object.values(lobby.participants).filter((p) => !p.po);
-    if (nonPO.length === 0 || !nonPO.every((p) => p.estimate !== null)) return;
+    const activeNonPO = Object.values(lobby.participants).filter(
+      (p) => !p.po && p.disconnectedAt === null,
+    );
+    if (activeNonPO.length === 0 || !activeNonPO.every((p) => p.estimate !== null)) return;
     lobby.revealed = true;
     logSecurity("info", "Lobby revealed", { lobbyId: id, socketId: socket.id });
     broadcast(id);
@@ -485,17 +546,20 @@ export {
   socketLimiter,
   lobbyCreationTracker,
   isValidLobbyId,
+  isValidUserId,
   sanitizeName,
   getClientIp,
   canCreateLobby,
   runHeartbeatCleanup,
   runPeriodicCleanup,
+  getLobbyState,
   lastHeartbeats,
   socketLobbies,
   ALLOWED_ESTIMATES,
   MAX_PARTICIPANTS,
   HEARTBEAT_INTERVAL,
   HEARTBEAT_TIMEOUT,
+  GHOST_TIMEOUT,
   type LobbyState,
 };
 

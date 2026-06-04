@@ -229,6 +229,23 @@ h1 {
   font-weight: 600;
 }
 
+.reconnecting-banner {
+  background: #d29922;
+  color: #fff;
+  text-align: center;
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.card.ghost {
+  opacity: 0.45;
+}
+
+.card.ghost .name {
+  text-decoration: line-through;
+}
+
 footer {
   margin-top: auto;
   padding: 1rem 2rem;

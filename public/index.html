@@ -17,15 +17,21 @@
 
       <div v-if="rateLimitMsg" class="rate-limit-banner">{{ rateLimitMsg }}</div>
 
+      <div v-if="disconnected" class="reconnecting-banner">
+        You are offline. Retrying to reconnect in {{ reconnectCountdown }}s…
+      </div>
+
       <main v-if="state" class="lobby">
         <div class="participants">
           <div
             v-for="p in state.participants"
             :key="p.id"
             class="card"
-            :class="{ po: p.po, me: p.id === myId }"
+            :class="{ po: p.po, me: p.id === myId, ghost: p.connected === false }"
           >
-            <div class="name">{{ p.name }}{{ p.po ? ' (PO)' : '' }}</div>
+            <div class="name">
+              {{ p.name }}{{ p.po ? ' (PO)' : '' }}{{ p.connected === false ? ' (offline)' : '' }}
+            </div>
             <div class="estimate">
               {{ state.revealed ? (p.estimate ?? '-') : (typeof p.estimate === 'number' ? '✓' :
               (p.estimate ?? '?')) }}
