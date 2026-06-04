@@ -70,7 +70,7 @@ export const appOptions = {
       myId: null,
       currentLobbyId: "",
       name: (typeof localStorage !== "undefined" && localStorage.getItem("qp-name")) || "Anonymous",
-      po: false,
+      po: typeof localStorage !== "undefined" && localStorage.getItem("qp-user-po") === "1",
       showSettings: false,
       rateLimitMsg: null,
       rateLimitTimer: null,
@@ -191,7 +191,13 @@ export const appOptions = {
       if (state.lobbyId !== this.currentLobbyId) return;
       this.state = state;
       const me = state.participants.find((p: Participant) => p.id === this.myId);
-      if (me) this.po = me.po;
+      if (me) {
+        this.po = me.po;
+        if (typeof localStorage !== "undefined") {
+          if (me.po) localStorage.setItem("qp-user-po", "1");
+          else localStorage.removeItem("qp-user-po");
+        }
+      }
     });
 
     socket.on("rate-limited", ({ event, retryAfter }: { event: string; retryAfter: number }) => {

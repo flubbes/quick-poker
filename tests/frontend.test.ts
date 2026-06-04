@@ -76,6 +76,9 @@ describe("Frontend", () => {
         setItem: (k: string, v: string) => {
           localStorageData[k] = v;
         },
+        removeItem: (k: string) => {
+          delete localStorageData[k];
+        },
       },
       writable: true,
     });
@@ -1140,5 +1143,177 @@ describe("Frontend", () => {
     );
 
     wrapper.unmount();
+  });
+
+  // ========================================================================
+  // PO PERSISTENCE
+  // ========================================================================
+
+  it("seeds po from localStorage on mount when qp-user-po is '1'", async () => {
+    localStorageData["qp-user-po"] = "1";
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    expect((wrapper.vm as any).po).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("does not seed po when qp-user-po is missing or not '1'", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    expect((wrapper.vm as any).po).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("treats qp-user-po values other than '1' as false", async () => {
+    localStorageData["qp-user-po"] = "true";
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    expect((wrapper.vm as any).po).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("writes qp-user-po='1' on state event when me.po is true", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    expect(localStorageData["qp-user-po"]).toBeUndefined();
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: true, connected: true },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+
+    expect(localStorageData["qp-user-po"]).toBe("1");
+    wrapper.unmount();
+  });
+
+  it("removes qp-user-po on state event when me.po is false", async () => {
+    localStorageData["qp-user-po"] = "1";
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    expect(localStorageData["qp-user-po"]).toBe("1");
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+
+    expect(localStorageData["qp-user-po"]).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("preserves PO status across a hard reload (mount → state → unmount → remount)", async () => {
+    const appOptions = await loadAppOptions();
+
+    // First mount: user enables PO, server confirms via state.
+    const wrapper1 = mount(appOptions);
+    await flushPromises();
+    expect((wrapper1.vm as any).po).toBe(false);
+    expect(localStorageData["qp-user-po"]).toBeUndefined();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    (wrapper1.vm as any).po = true;
+    (wrapper1.vm as any).updatePO();
+    expect(mockSocket.emit).toHaveBeenCalledWith("setPO", "lobby-1", true);
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: true, connected: true },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+    expect(localStorageData["qp-user-po"]).toBe("1");
+
+    // Simulate a hard reload by unmounting the first instance and mounting
+    // a fresh one. localStorage is preserved across this boundary.
+    wrapper1.unmount();
+    (mockSocket.emit as ReturnType<typeof vi.fn>).mockClear();
+    (mockSocket.on as ReturnType<typeof vi.fn>).mockClear();
+
+    const wrapper2 = mount(appOptions);
+    await flushPromises();
+    expect((wrapper2.vm as any).po).toBe(true);
+
+    // The reload must re-emit setPO(true) so the server restores the role.
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+    expect(mockSocket.emit).toHaveBeenCalledWith("setPO", "lobby-1", true);
+
+    wrapper2.unmount();
+  });
+
+  it("drops PO status across a hard reload after the user toggled it off", async () => {
+    localStorageData["qp-user-po"] = "1";
+    const appOptions = await loadAppOptions();
+
+    const wrapper1 = mount(appOptions);
+    await flushPromises();
+    expect((wrapper1.vm as any).po).toBe(true);
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    // User toggles PO off — server confirms via state.
+    (wrapper1.vm as any).po = false;
+    (wrapper1.vm as any).updatePO();
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+    expect(localStorageData["qp-user-po"]).toBeUndefined();
+
+    wrapper1.unmount();
+    (mockSocket.emit as ReturnType<typeof vi.fn>).mockClear();
+    (mockSocket.on as ReturnType<typeof vi.fn>).mockClear();
+
+    const wrapper2 = mount(appOptions);
+    await flushPromises();
+    expect((wrapper2.vm as any).po).toBe(false);
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+    // setPO must NOT be emitted on the second mount.
+    expect(mockSocket.emit).not.toHaveBeenCalledWith("setPO", "lobby-1", true);
+
+    wrapper2.unmount();
   });
 });
