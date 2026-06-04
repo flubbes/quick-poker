@@ -84,6 +84,42 @@ on a fresh socket → the old one is pruned).
    `navigator.onLine === false`. The 5 s socket-disconnect fallback
    covers that path.
 
+### Persistence model
+
+User-visible preferences survive a hard reload (`location.reload()`,
+tab restore, OS kill) by mirroring a small subset of state into
+`localStorage`. The server is the source of truth; `localStorage` is
+a cache that primes Vue data on mount and is overwritten by the next
+server `state` event.
+
+| Key          | Purpose      | Read on mount | Write trigger                                                                                             | Strict value check                                                               |
+| ------------ | ------------ | ------------- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `qp-name`    | Display name | yes           | Optimistic — `updateName()` writes to `localStorage` in the same tick as the `setName` socket emit.       | Any string, max 15 chars (server-trimmed).                                       |
+| `qp-user-po` | PO role flag | yes           | Pessimistic — the `state` event handler writes `"1"` (or `removeItem`s) when `me.po` is server-confirmed. | `=== "1"`; any other value (including `"0"`, `"true"`, or `null`) seeds `false`. |
+
+The split is deliberate:
+
+- **`qp-name` is optimistic** — a user typing their name should not
+  see it flicker back to the previous value while the round-trip is
+  in flight. The `setName` socket emit is fire-and-forget from the
+  client's perspective.
+- **`qp-user-po` is pessimistic** — a refresh must mirror whatever
+  the server has, not whatever the previous client optimistically
+  emitted. Writing only in the `state` handler means a tab that
+  lost its socket, reconnected, and re-joined always gets a
+  fresh, authoritative value.
+
+`localStorage` is the only browser store used for preferences. The
+persisted value is cleared by the relevant handler on logout /
+revert; the only ways for it to get out of sync with the server
+are (a) the server reset its in-memory lobby between sessions
+(`localStorage` still says PO) — the next `state` event will
+overwrite it; or (b) the user manually edits `localStorage` — the
+`=== "1"` check keeps the seed safe.
+
+Identity keys (`qp-user-id`, `qp-session-id`) are a separate concern
+and are documented in **Identity layering** above.
+
 ## Consequences
 
 **Positive**
@@ -118,6 +154,9 @@ on a fresh socket → the old one is pruned).
 - `public/app.ts:97-124` — countdown loop.
 - `public/app.ts:174-184` — `offline` / `online` handlers.
 - `public/app.ts:3-13` / `15-25` — `getUserId` / `getSessionId`.
+- `public/app.ts:72-73` — preference seeds (`qp-name`, `qp-user-po`) read in `data()`.
+- `public/app.ts:190-201` — `state` handler mirror for `qp-user-po`.
+- `public/app.ts:240-244` — `updateName` optimistic write for `qp-name`.
 - `tests/server.test.ts` — `Connection Status`, `Public state
 redaction`, `join payload compatibility`, `Multi-tab refresh flow`
   describe blocks.
