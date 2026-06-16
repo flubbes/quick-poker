@@ -53,6 +53,7 @@ Before opening a PR, run:
 
 ```bash
 npm run format:check
+npm run typecheck
 npm test
 ```
 
