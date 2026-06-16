@@ -37,7 +37,7 @@ app.use(
 // HTTP rate limiting (returns 429 with Retry-After)
 const httpLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 200,
+  limit: 200,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (_req: Request, res: Response, _next: NextFunction, options: { windowMs: number }) => {
