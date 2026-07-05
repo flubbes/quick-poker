@@ -44,11 +44,13 @@ Notes:
 
 - The server does **not** hot-reload. Restart with `npm start` after code changes to pick them up.
 - `AUTO_START=false` is for tests only. Do **not** set it for local runs — the server will silently fail to bind.
+- Node version is pinned in `.node-version` — always use latest LTS. See [ADR-0002](docs/adr/0002-node-version-policy.md).
 
 ## Known Gotchas
 
 - `AUTO_START=false` prevents the server from binding on module load. It is used by `tests/server.test.ts` to run the server in-process. Do not set it for `npm start`.
 - The running server keeps serving its in-memory code. After a `git pull`, `git merge`, or PR merge, restart the server to pick up changes.
+- **Dockerfile Node version must match `.node-version`** — when bumping the Node version, update both `.node-version` and the image tag in `Dockerfile:1`. A mismatch between the two means the container runs a different runtime than development/CI.
 
 ## Requirements
 
