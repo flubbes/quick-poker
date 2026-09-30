@@ -14,14 +14,17 @@ differences or type mismatches.
 
 1. **Node.js runtime** — always use the **latest active LTS** version.
    LTS releases provide a stable API surface and long support window.
-2. **`@types/node`** — pin to the **same major.minor** as the runtime
-   version. This prevents type mismatches where type declarations
-   reference APIs not yet available in the actual runtime.
+2. **`@types/node`** — pin to the **same major** as the runtime
+   version, at the latest available 24.x release. This prevents type
+   mismatches where type declarations reference APIs not yet available
+   in the actual runtime. (`@types/node` minor versions do not track
+   Node minor versions exactly.)
 
 ## Enforcement
 
 - The runtime version is pinned in `.node-version` (consumed by mise,
   nvm, and similar tools).
+- CI reads the same pin via `actions/setup-node`'s `node-version-file`.
 - The global mise config at `~/.config/mise/config.toml` mirrors the
   same version.
 - `@types/node` in `package.json` is updated whenever the runtime
