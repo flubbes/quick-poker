@@ -14,24 +14,24 @@
     "format:check": "oxfmt --check ."
   },
   "dependencies": {
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "express": "5.2.1",
-    "express-rate-limit": "8.5.2",
-    "helmet": "8.2.0",
-    "socket.io": "4.8.3",
-    "vue": "3.5.39"
+    "express-rate-limit": "8.7.0",
+    "helmet": "8.3.0",
+    "socket.io": "4.8.4",
+    "vue": "3.5.43"
   },
   "devDependencies": {
     "@types/express": "5.0.6",
-    "@types/node": "24.13.2",
-    "@types/supertest": "7.2.0",
-    "@vue/test-utils": "2.4.11",
+    "@types/node": "24.19.0",
+    "@types/supertest": "7.2.1",
+    "@vue/test-utils": "2.5.1",
     "jsdom": "29.1.1",
-    "oxfmt": "0.57.0",
-    "socket.io-client": "4.8.3",
-    "supertest": "7.2.2",
-    "tsx": "4.22.5",
+    "oxfmt": "0.71.0",
+    "socket.io-client": "4.8.4",
+    "supertest": "7.3.0",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
-    "vitest": "4.1.9"
+    "vitest": "4.1.11"
   }
 }
