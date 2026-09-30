@@ -8,7 +8,7 @@ This project uses **oxfmt** (the OXC JavaScript/TypeScript formatter) for all co
 2. **Always run the format check** (`npm run format:check`) after making code changes and before running tests. If formatting issues are found, fix them first.
 3. **Do not mix formatting changes with functional changes** in the same commit unless the functional change is tiny (≤5 lines). When formatting a large file, make a dedicated `style:` or `chore:` commit.
 4. Oxfmt respects `.gitignore` and skips `node_modules` by default.
-5. No custom `.oxfmtrc.json` is used — we rely on oxfmt defaults for consistency.
+5. `.oxfmtrc.json` exists but only lists `ignorePatterns` (currently empty) — we otherwise rely on oxfmt defaults for consistency.
 
 ## Commands
 
