@@ -15,13 +15,12 @@ Run the full CI pipeline locally using `act` before pushing or opening a pull re
    act push
    ```
    The `.actrc` file automatically loads `act-event.json`, so no extra flags are needed.
-3. Confirm both jobs finish successfully:
-   - `test` — installs dependencies, runs format check, typecheck, and tests
-   - `docker` — builds the Docker image (only after `test` passes)
+3. Confirm the `ci` job finishes successfully. It runs, in order:
+   - format check, typecheck, and tests (`npm ci` first)
+   - docker build, container smoke test (HTTP + Socket.IO)
 
 ## Troubleshooting
 
 - If `act` complains about missing Docker, start Docker Desktop or your local Docker daemon.
-- To run only the `test` job: `act push -j test`
-- To run only the `docker` job: `act push -j docker`
+- To run only the single CI job: `act push -j ci`
 - The `act-event.json` payload sets `"act": true` so that future release jobs (Stage 2) are skipped during local runs.
