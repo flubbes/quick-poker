@@ -1,6 +1,24 @@
 type SocketInstance = import("socket.io-client").Socket;
-const RECONNECT_INTERVAL_SECONDS = 5;
+
+/** How often the client tells the server it is still alive. */
+const HEARTBEAT_INTERVAL_MS = 5000;
+/**
+ * How long the client waits for the heartbeat acknowledgement. A missing ack
+ * means the transport is half-open (the socket still says "connected" but
+ * nothing comes back) — the classic failure mode on flaky mobile networks.
+ */
+const HEARTBEAT_ACK_TIMEOUT_MS = 8000;
+/** How long a disconnect has to persist before the offline banner appears. */
+const OFFLINE_GRACE_MS = 5000;
+/** First reconnect delay; doubles on every failed attempt. */
+const RECONNECT_BASE_DELAY_MS = 1000;
+/** Upper bound for the reconnect backoff. */
+const RECONNECT_MAX_DELAY_MS = 15000;
+/** Relative jitter applied to the backoff so clients do not retry in lockstep. */
+const RECONNECT_JITTER = 0.2;
 const UUID_PATTERN = /^[0-9a-f-]{36}$/i;
+
+type Presence = "active" | "away" | "offline";
 
 function generateId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
@@ -28,12 +46,18 @@ function getSessionId(): string {
   return generated;
 }
 
+function isTabVisible(): boolean {
+  if (typeof document === "undefined") return true;
+  return document.visibilityState !== "hidden";
+}
+
 interface Participant {
   id: string;
   name: string;
   estimate: number | string | null;
   po: boolean;
   connected: boolean;
+  presence?: Presence;
 }
 
 interface LobbyState {
@@ -61,6 +85,9 @@ interface AppData {
   reconnectInterval: ReturnType<typeof setInterval> | null;
   offlineHandler: (() => void) | null;
   onlineHandler: (() => void) | null;
+  visibilityHandler: (() => void) | null;
+  /** Set on unmount so late socket callbacks do not restart the retry loop. */
+  destroyed: boolean;
 }
 
 export const appOptions = {
@@ -82,6 +109,8 @@ export const appOptions = {
       reconnectInterval: null,
       offlineHandler: null,
       onlineHandler: null,
+      visibilityHandler: null,
+      destroyed: false,
     };
   },
   computed: {
@@ -95,11 +124,32 @@ export const appOptions = {
     },
   },
   mounted(this: AppData) {
-    const socket = io();
+    const socket = io({
+      // The reconnect loop below owns the retry schedule, so socket.io must not
+      // run a second one in parallel.
+      reconnection: false,
+      // A connection attempt must not hang forever on a dead network.
+      timeout: 10000,
+      // Websocket first (fewer round trips, better on flaky links), with an
+      // automatic fallback to long polling for restrictive proxies.
+      transports: ["websocket", "polling"],
+    });
     this.socket = socket;
     const lobbyId = location.hash.slice(1);
     const userId = getUserId();
     const sessionId = getSessionId();
+
+    let reconnectAttempt = 0;
+
+    const nextReconnectDelay = (): number => {
+      const base = Math.min(
+        RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempt,
+        RECONNECT_MAX_DELAY_MS,
+      );
+      reconnectAttempt += 1;
+      const jitter = 1 + (Math.random() * 2 - 1) * RECONNECT_JITTER;
+      return Math.max(500, Math.round(base * jitter));
+    };
 
     const stopReconnectCountdown = () => {
       if (this.reconnectInterval !== null) {
@@ -109,26 +159,65 @@ export const appOptions = {
       this.reconnectCountdown = 0;
     };
 
+    /**
+     * Single retry loop with exponential backoff. It keeps running until the
+     * socket connects again; the banner is controlled separately.
+     */
     const startReconnectCountdown = () => {
-      this.disconnected = true;
+      if (this.destroyed) return;
       if (this.reconnectInterval !== null) return;
-      this.reconnectCountdown = RECONNECT_INTERVAL_SECONDS;
+      const delay = nextReconnectDelay();
+      const deadline = Date.now() + delay;
+      this.reconnectCountdown = Math.max(1, Math.ceil(delay / 1000));
       this.reconnectInterval = setInterval(() => {
-        if (this.reconnectCountdown > 1) {
-          this.reconnectCountdown--;
+        if (this.destroyed) {
+          stopReconnectCountdown();
           return;
         }
-        this.reconnectCountdown = RECONNECT_INTERVAL_SECONDS;
+        const remaining = deadline - Date.now();
+        this.reconnectCountdown = Math.max(1, Math.ceil(remaining / 1000));
+        if (remaining > 0) return;
+        stopReconnectCountdown();
         socket.connect();
+        // The attempt is in flight — arm the next one in case it fails.
+        startReconnectCountdown();
       }, 1000);
     };
 
-    const reconnectNow = () => {
-      socket.connect();
-      if (this.disconnected) {
-        stopReconnectCountdown();
-        startReconnectCountdown();
+    /** Show the offline banner, but only after the disconnect has persisted. */
+    const armBannerTimer = () => {
+      if (this.disconnectTimer !== null) return;
+      this.disconnectTimer = setTimeout(() => {
+        this.disconnected = true;
+        this.disconnectTimer = null;
+      }, OFFLINE_GRACE_MS);
+    };
+
+    const showBannerNow = () => {
+      if (this.disconnectTimer !== null) {
+        clearTimeout(this.disconnectTimer);
+        this.disconnectTimer = null;
       }
+      this.disconnected = true;
+    };
+
+    const sendVisibility = () => {
+      if (!socket.connected || !this.currentLobbyId) return;
+      socket.emit("visibility", this.currentLobbyId, isTabVisible());
+    };
+
+    /**
+     * Heartbeat with acknowledgement. A missing ack proves the link is dead,
+     * even when the transport still claims to be connected.
+     */
+    const sendHeartbeat = () => {
+      if (!socket.connected) return;
+      socket.timeout(HEARTBEAT_ACK_TIMEOUT_MS).emit("heartbeat", (err: Error | null) => {
+        if (!err || this.destroyed) return;
+        socket.disconnect();
+        startReconnectCountdown();
+        showBannerNow();
+      });
     };
 
     const joinLobby = (id: string) => {
@@ -136,6 +225,7 @@ export const appOptions = {
         if (!joinedId) {
           alert("Failed to create or join lobby. Please try again later.");
           startReconnectCountdown();
+          showBannerNow();
           return;
         }
         location.hash = joinedId;
@@ -143,6 +233,8 @@ export const appOptions = {
         this.myId = socket.id ?? null;
         socket.emit("setName", joinedId, this.name);
         if (this.po) socket.emit("setPO", joinedId, true);
+        // Tell the server whether our tab is in the foreground.
+        sendVisibility();
       });
     };
 
@@ -157,35 +249,58 @@ export const appOptions = {
       const wasDisconnected = this.disconnected;
       stopReconnectCountdown();
       this.disconnected = false;
+      reconnectAttempt = 0;
       if ((wasDisconnected || hadPendingDisconnect) && this.currentLobbyId) {
         joinLobby(this.currentLobbyId);
       }
     });
 
     socket.on("disconnect", () => {
+      if (this.destroyed) return;
+      startReconnectCountdown();
       if (this.disconnected) return;
-      if (this.disconnectTimer !== null) clearTimeout(this.disconnectTimer);
-      this.disconnectTimer = setTimeout(() => {
-        startReconnectCountdown();
-        this.disconnectTimer = null;
-      }, 5000);
+      armBannerTimer();
+    });
+
+    // A failed connection attempt never emits "disconnect" — without this the
+    // client would sit there silently after a failed initial connect.
+    socket.on("connect_error", () => {
+      if (this.destroyed) return;
+      startReconnectCountdown();
+      armBannerTimer();
     });
 
     const onOffline = () => {
-      if (this.disconnectTimer !== null) {
-        clearTimeout(this.disconnectTimer);
-        this.disconnectTimer = null;
-      }
       socket.disconnect();
       startReconnectCountdown();
+      showBannerNow();
     };
     const onOnline = () => {
-      reconnectNow();
+      socket.connect();
+      startReconnectCountdown();
     };
     this.offlineHandler = onOffline;
     this.onlineHandler = onOnline;
     window.addEventListener("offline", onOffline);
     window.addEventListener("online", onOnline);
+
+    const onVisibilityChange = () => {
+      if (isTabVisible()) {
+        // The server may have dropped us while the tab was throttled, so probe
+        // the link right away instead of waiting for the next heartbeat.
+        sendVisibility();
+        if (socket.connected) {
+          sendHeartbeat();
+        } else {
+          socket.connect();
+          startReconnectCountdown();
+        }
+      } else {
+        sendVisibility();
+      }
+    };
+    this.visibilityHandler = onVisibilityChange;
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     socket.on("state", (state: LobbyState) => {
       if (state.lobbyId !== this.currentLobbyId) return;
@@ -209,12 +324,11 @@ export const appOptions = {
     });
 
     this.heartbeatInterval = setInterval(() => {
-      if (socket && socket.connected) {
-        socket.emit("heartbeat");
-      }
-    }, 5000);
+      sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
   },
   beforeUnmount(this: AppData) {
+    this.destroyed = true;
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
     }
@@ -235,8 +349,21 @@ export const appOptions = {
       window.removeEventListener("online", this.onlineHandler);
       this.onlineHandler = null;
     }
+    if (this.visibilityHandler) {
+      document.removeEventListener("visibilitychange", this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+    if (this.socket) {
+      this.socket.disconnect();
+    }
   },
   methods: {
+    /** Suffix shown next to a participant's name. */
+    presenceSuffix(this: AppData, p: Participant): string {
+      if (p.presence === "away") return " (tab in background)";
+      if (!p.connected) return " (offline)";
+      return "";
+    },
     updateName(this: AppData): void {
       localStorage.setItem("qp-name", this.name);
       if (this.currentLobbyId && this.socket) {

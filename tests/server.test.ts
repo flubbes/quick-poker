@@ -13,12 +13,16 @@ import {
   sanitizeName,
   getClientIp,
   runPeriodicCleanup,
+  runHeartbeatCleanup,
   getLobbyState,
   lastHeartbeats,
   socketLobbies,
+  socketAwayAt,
   ALLOWED_ESTIMATES,
   MAX_PARTICIPANTS,
   GHOST_TIMEOUT,
+  HEARTBEAT_TIMEOUT,
+  AWAY_HEARTBEAT_TIMEOUT,
 } from "../src/server";
 import type { LobbyState } from "../src/server";
 
@@ -704,11 +708,19 @@ describe("Public state redaction", () => {
     const state = getLobbyState(lobbyId, "socket-internal");
     expect(state).toBeTruthy();
     const me = state!.participants[0];
-    expect(Object.keys(me).sort()).toEqual(["connected", "estimate", "id", "name", "po"]);
+    expect(Object.keys(me).sort()).toEqual([
+      "connected",
+      "estimate",
+      "id",
+      "name",
+      "po",
+      "presence",
+    ]);
     expect(me.id).toBe("socket-internal");
     expect(me.name).toBe("Alice");
     expect(me.po).toBe(false);
     expect(me.connected).toBe(true);
+    expect(me.presence).toBe("active");
     expect(me.estimate).toBe(5);
     // Internal fields must not leak to the wire
     expect((me as unknown as Record<string, unknown>).userId).toBeUndefined();
@@ -1556,7 +1568,7 @@ describe("Heartbeat", () => {
     const dyingId = dying.id as string;
 
     // Force the dying socket to look like it missed its heartbeat
-    lastHeartbeats.set(dyingId, Date.now() - 10_000);
+    lastHeartbeats.set(dyingId, Date.now() - HEARTBEAT_TIMEOUT - 5_000);
 
     // Wait for the 5s heartbeat-cleanup tick to fire.
     await new Promise((r) => setTimeout(r, 6_000));
@@ -1750,6 +1762,239 @@ describe("getClientIp", () => {
 });
 
 // ============================================================================
+// PRESENCE (BACKGROUND TABS)
+// ============================================================================
+
+describe("Presence", () => {
+  it("reports a connected participant with a visible tab as active", async () => {
+    const client = createSocket();
+    await connect(client);
+    const statePromise = waitForState(client);
+    await join(client);
+    const state = await statePromise;
+
+    const me = state?.participants[0];
+    expect(me?.presence).toBe("active");
+    expect(me?.connected).toBe(true);
+
+    await disconnect(client);
+  });
+
+  it("reports a participant with a backgrounded tab as away but still connected", async () => {
+    const client = createSocket();
+    await connect(client);
+    const lobbyId = await join(client);
+    const clientId = client.id as string;
+
+    const statePromise = waitForState(client);
+    client.emit("visibility", lobbyId, false);
+    const state = await statePromise;
+
+    const me = state?.participants.find((p) => p.id === clientId);
+    expect(me?.presence).toBe("away");
+    expect(me?.connected).toBe(true);
+
+    await disconnect(client);
+  });
+
+  it("returns a participant to active when the tab comes back to the foreground", async () => {
+    const client = createSocket();
+    await connect(client);
+    const lobbyId = await join(client);
+    const clientId = client.id as string;
+
+    client.emit("visibility", lobbyId, false);
+    await waitForState(client);
+
+    const statePromise = waitForState(client);
+    client.emit("visibility", lobbyId, true);
+    const state = await statePromise;
+
+    const me = state?.participants.find((p) => p.id === clientId);
+    expect(me?.presence).toBe("active");
+    expect(me?.connected).toBe(true);
+
+    await disconnect(client);
+  });
+
+  it("does not block the reveal when the only missing estimate belongs to a backgrounded tab", async () => {
+    const active = createSocket();
+    await connect(active);
+    const lobbyId = await join(active);
+
+    const backgrounded = createSocket();
+    await connect(backgrounded);
+    await join(backgrounded, lobbyId as string);
+    await waitForState(backgrounded);
+
+    // The backgrounded participant never estimates
+    backgrounded.emit("visibility", lobbyId, false);
+    await waitForState(backgrounded);
+
+    active.emit("estimate", lobbyId, ALLOWED_ESTIMATES[0]);
+    const state = await waitForState(active);
+    expect(state?.canReveal).toBe(true);
+
+    active.emit("reveal", lobbyId);
+    const revealed = await waitForState(active);
+    expect(revealed?.revealed).toBe(true);
+
+    await disconnect(active);
+    await disconnect(backgrounded);
+  });
+
+  it("does not block the reset when a participant is offline", async () => {
+    const active = createSocket();
+    await connect(active);
+    const lobbyId = await join(active);
+
+    const dropping = createSocket();
+    await connect(dropping);
+    await join(dropping, lobbyId as string);
+    await waitForState(dropping);
+
+    active.emit("estimate", lobbyId, ALLOWED_ESTIMATES[0]);
+    await waitForState(active);
+    dropping.emit("estimate", lobbyId, ALLOWED_ESTIMATES[1]);
+    await waitForState(dropping);
+    active.emit("reveal", lobbyId);
+    await waitForState(active);
+
+    // The other participant drops while the round is open
+    await disconnect(dropping);
+    await new Promise((r) => setTimeout(r, 100));
+
+    active.emit("reset", lobbyId);
+    const state = await waitForState(active);
+    expect(state?.revealed).toBe(false);
+    expect(state?.participants.find((p) => p.id === (active.id as string))?.estimate).toBeNull();
+
+    await disconnect(active);
+  });
+
+  it("keeps a backgrounded participant alive past the normal heartbeat timeout", async () => {
+    const client = createSocket();
+    await connect(client);
+    const lobbyId = await join(client);
+    const clientId = client.id as string;
+
+    client.emit("visibility", lobbyId, false);
+    await waitForState(client);
+
+    // A backgrounded tab is throttled by the browser, so it may miss beats.
+    lastHeartbeats.set(clientId, Date.now() - HEARTBEAT_TIMEOUT - 5_000);
+    runHeartbeatCleanup();
+
+    const participant = lobbies[lobbyId as string].participants[clientId];
+    expect(participant?.disconnectedAt).toBeNull();
+
+    await disconnect(client);
+  });
+
+  it("drops a backgrounded participant once the away timeout is exceeded", async () => {
+    const client = createSocket();
+    await connect(client);
+    const lobbyId = await join(client);
+    const clientId = client.id as string;
+
+    client.emit("visibility", lobbyId, false);
+    await waitForState(client);
+
+    lastHeartbeats.set(clientId, Date.now() - AWAY_HEARTBEAT_TIMEOUT - 5_000);
+    runHeartbeatCleanup();
+
+    const participant = lobbies[lobbyId as string].participants[clientId];
+    expect(participant?.disconnectedAt).not.toBeNull();
+
+    await disconnect(client);
+  });
+
+  it("acknowledges the heartbeat so the client can detect a dead link", async () => {
+    const client = createSocket();
+    await connect(client);
+    await join(client);
+
+    const acked = await new Promise<boolean>((resolve) => {
+      client.emit("heartbeat", () => resolve(true));
+      setTimeout(() => resolve(false), 1_000);
+    });
+
+    expect(acked).toBe(true);
+    await disconnect(client);
+  });
+
+  it("carries name, role and estimate over to a rejoin of the same session", async () => {
+    const userId = "99999999-9999-9999-9999-999999999999";
+    const sessionId = "88888888-8888-8888-8888-888888888888";
+
+    const first = createSocket();
+    await connect(first);
+    const lobbyId = await join(first, "", userId, sessionId);
+
+    first.emit("setName", lobbyId, "Alice");
+    await waitForState(first);
+    first.emit("estimate", lobbyId, 5);
+    await waitForState(first);
+
+    // The connection drops and the client comes back with the same identity
+    const second = createSocket();
+    await connect(second);
+    const statePromise = waitForState(second);
+    await join(second, lobbyId as string, userId, sessionId);
+    const state = await statePromise;
+
+    const me = state?.participants.find((p) => p.id === (second.id as string));
+    expect(me?.name).toBe("Alice");
+    expect(me?.estimate).toBe(5);
+    expect(state?.participants).toHaveLength(1);
+
+    await disconnect(first);
+    await disconnect(second);
+  });
+
+  it("carries the estimate over when the same user rejoins from another tab", async () => {
+    const userId = "77777777-7777-7777-7777-777777777777";
+    const sessionId = "66666666-6666-6666-6666-666666666666";
+
+    const first = createSocket();
+    await connect(first);
+    const lobbyId = await join(first, "", userId, sessionId);
+    first.emit("estimate", lobbyId, 8);
+    await waitForState(first);
+
+    // The first tab goes away completely
+    await disconnect(first);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const second = createSocket();
+    await connect(second);
+    const statePromise = waitForState(second);
+    await join(second, lobbyId as string, userId, sessionId);
+    const state = await statePromise;
+
+    const me = state?.participants.find((p) => p.id === (second.id as string));
+    expect(me?.estimate).toBe(8);
+
+    await disconnect(second);
+  });
+
+  it("clears the away marker when the socket goes away", async () => {
+    const client = createSocket();
+    await connect(client);
+    const lobbyId = await join(client);
+    const clientId = client.id as string;
+
+    client.emit("visibility", lobbyId, false);
+    await waitForState(client);
+    expect(socketAwayAt.has(clientId)).toBe(true);
+
+    await disconnect(client);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(socketAwayAt.has(clientId)).toBe(false);
+  });
+});
+
+// ============================================================================
 // CLEANUP TIMERS
 // ============================================================================
 
@@ -1762,7 +2007,7 @@ describe("Cleanup Timers", () => {
     expect(lobbies[lobbyId as string]).toBeTruthy();
 
     // Manually set last heartbeat to be older than timeout
-    lastHeartbeats.set(clientId, Date.now() - 10000);
+    lastHeartbeats.set(clientId, Date.now() - HEARTBEAT_TIMEOUT - 5_000);
 
     // Wait for heartbeat interval to fire (5s)
     await new Promise((r) => setTimeout(r, 6000));

@@ -27,11 +27,14 @@
             v-for="p in state.participants"
             :key="p.id"
             class="card"
-            :class="{ po: p.po, me: p.id === myId, ghost: p.connected === false }"
+            :class="{
+              po: p.po,
+              me: p.id === myId,
+              ghost: p.connected === false,
+              away: p.presence === 'away',
+            }"
           >
-            <div class="name">
-              {{ p.name }}{{ p.po ? ' (PO)' : '' }}{{ p.connected === false ? ' (offline)' : '' }}
-            </div>
+            <div class="name">{{ p.name }}{{ p.po ? ' (PO)' : '' }}{{ presenceSuffix(p) }}</div>
             <div class="estimate">
               {{ state.revealed ? (p.estimate ?? '-') : (typeof p.estimate === 'number' ? '✓' :
               (p.estimate ?? '?')) }}
@@ -45,7 +48,7 @@
             :key="val"
             @click="estimate(val)"
             :class="{ selected: myEstimate === val }"
-            :disabled="state.revealed"
+            :disabled="state.revealed || disconnected"
           >
             {{ val }}
           </button>
