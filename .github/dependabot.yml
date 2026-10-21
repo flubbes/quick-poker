@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Application dependencies. Minor and patch updates arrive as one grouped PR
+  # so a stale pin cannot sit around unnoticed; majors stay individual so they
+  # get reviewed on their own.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Deliberately deferred majors — see reviews/todo.md.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vitest"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "jsdom"
+        update-types: ["version-update:semver-major"]
+      # The runtime is pinned to the 24.x line by ADR-0002, so the types must
+      # stay on the same major.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  # CI actions.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+
+# The docker ecosystem is intentionally left out: the Dockerfile base image tag
+# must match .node-version (see AGENTS.md), so it is bumped by hand together
+# with the Node version.
