@@ -70,6 +70,25 @@ interface Lobby {
   createdAt: number;
 }
 
+/**
+ * Presence of a participant as seen by the other clients.
+ *
+ * - `active`  — connected and the browser tab is in the foreground
+ * - `away`    — connected, but the browser tab is in the background
+ * - `offline` — the socket is gone; the participant is kept as a ghost
+ *
+ * Only `active` participants are required for a Reveal. `away` and
+ * `offline` participants never hold the round hostage.
+ */
+type Presence = "active" | "away" | "offline";
+
+/** State carried over from a pruned participant to its replacement on rejoin. */
+interface CarriedParticipantState {
+  name: string;
+  po: boolean;
+  estimate: number | null;
+}
+
 interface RateLimitEntry {
   count: number;
   resetTime: number;
@@ -95,6 +114,7 @@ interface ClientParticipant {
   estimate: number | string | null;
   po: boolean;
   connected: boolean;
+  presence: Presence;
 }
 
 interface LobbyState {
@@ -109,7 +129,18 @@ const lobbies: Record<string, Lobby> = Object.create(null);
 const ALLOWED_ESTIMATES: readonly number[] = [0, 1, 2, 3, 5, 8, 13, 20, 40];
 const MAX_PARTICIPANTS = 50;
 const HEARTBEAT_INTERVAL = 5000;
-const HEARTBEAT_TIMEOUT = 7_000;
+/**
+ * A participant that is connected and in the foreground may miss one beat
+ * without being dropped — flaky links routinely delay a heartbeat by
+ * several seconds.
+ */
+const HEARTBEAT_TIMEOUT = 15_000;
+/**
+ * Background tabs get their timers throttled by the browser (roughly one
+ * beat per minute), so a backgrounded participant gets a much longer grace
+ * period before it is treated as gone.
+ */
+const AWAY_HEARTBEAT_TIMEOUT = 90_000;
 const GHOST_TIMEOUT = 60_000;
 
 function isValidLobbyId(id: unknown): boolean {
@@ -204,9 +235,31 @@ const socketLimiter = new SocketRateLimiter();
 // Track which lobbies each socket belongs to
 const socketLobbies = new Map<string, Set<string>>();
 const lastHeartbeats = new Map<string, number>();
+/**
+ * Timestamp of the moment a socket's browser tab went to the background.
+ * Absent = the tab is in the foreground. Tab visibility is a property of the
+ * browser tab, not of the lobby, so it is tracked per socket.
+ */
+const socketAwayAt = new Map<string, number>();
 
 function getSocketLobbies(socketId: string): Set<string> {
   return socketLobbies.get(socketId) || new Set<string>();
+}
+
+/** Presence of a participant, derived from its socket state. */
+function getPresence(participant: Participant): Presence {
+  if (participant.disconnectedAt !== null) return "offline";
+  if (socketAwayAt.has(participant.id)) return "away";
+  return "active";
+}
+
+/**
+ * A participant counts towards the Reveal only while it is connected *and*
+ * its tab is in the foreground. Offline and backgrounded participants never
+ * block the round.
+ */
+function isActiveParticipant(participant: Participant): boolean {
+  return participant.disconnectedAt === null && !socketAwayAt.has(participant.id);
 }
 
 function markParticipantGhosts(socket: Socket): string[] {
@@ -231,6 +284,7 @@ function cleanupSocket(socket: Socket): void {
   const socketId = socket.id;
   socketLimiter.removeSocket(socketId);
   lastHeartbeats.delete(socketId);
+  socketAwayAt.delete(socketId);
 
   const lobbiesToUpdate = markParticipantGhosts(socket);
 
@@ -242,15 +296,22 @@ function cleanupSocket(socket: Socket): void {
 // Heartbeat monitoring: prune dead connections every 5 seconds
 function runHeartbeatCleanup(now = Date.now()): void {
   for (const [socketId, lastBeat] of lastHeartbeats) {
-    if (now - lastBeat > HEARTBEAT_TIMEOUT) {
+    const timeout = socketAwayAt.has(socketId) ? AWAY_HEARTBEAT_TIMEOUT : HEARTBEAT_TIMEOUT;
+    if (now - lastBeat > timeout) {
       const socket = io.sockets.sockets.get(socketId);
-      logSecurity("warn", "Heartbeat timeout", { socketId, lastBeat, elapsed: now - lastBeat });
+      logSecurity("warn", "Heartbeat timeout", {
+        socketId,
+        lastBeat,
+        elapsed: now - lastBeat,
+        away: socketAwayAt.has(socketId),
+      });
       if (socket) {
         cleanupSocket(socket);
         socket.disconnect(true);
       } else {
         socketLimiter.removeSocket(socketId);
         lastHeartbeats.delete(socketId);
+        socketAwayAt.delete(socketId);
         for (const lobbyId of Object.keys(lobbies)) {
           const lobby = lobbies[lobbyId];
           const participant = lobby?.participants[socketId];
@@ -297,8 +358,7 @@ function getLobbyState(lobbyId: string, viewerSocketId: string | null = null): L
   const lobby = lobbies[lobbyId];
   if (!lobby) return null;
   const rawParticipants = Object.values(lobby.participants);
-  const nonPO = rawParticipants.filter((p) => !p.po);
-  const activeNonPO = nonPO.filter((p) => p.disconnectedAt === null);
+  const activeNonPO = rawParticipants.filter((p) => !p.po && isActiveParticipant(p));
   const canReveal =
     !lobby.revealed && activeNonPO.length > 0 && activeNonPO.every((p) => p.estimate !== null);
   const participants: ClientParticipant[] = rawParticipants.map((p) => ({
@@ -306,6 +366,7 @@ function getLobbyState(lobbyId: string, viewerSocketId: string | null = null): L
     name: p.name,
     po: p.po,
     connected: p.disconnectedAt === null,
+    presence: getPresence(p),
     estimate:
       lobby.revealed || p.id === viewerSocketId ? p.estimate : p.estimate !== null ? "✓" : "?",
   }));
@@ -352,6 +413,7 @@ io.on("connection", (socket: Socket) => {
 
     const resolvedUserId = isValidUserId(userId) ? (userId as string) : null;
     const resolvedSessionId = isValidUserId(sessionId) ? (sessionId as string) : null;
+    let carried: CarriedParticipantState | null = null;
 
     let resolvedLobbyId = lobbyId as string;
 
@@ -413,6 +475,11 @@ io.on("connection", (socket: Socket) => {
     set.add(resolvedLobbyId);
 
     if (resolvedUserId) {
+      // Prune stale participants of the same user, but carry their state over
+      // to the new entry so a reconnect (network blip, tab refresh) does not
+      // wipe a vote that was already cast.
+      let sessionMatch: CarriedParticipantState | null = null;
+      let ghostMatch: CarriedParticipantState | null = null;
       for (const participantSocketId of Object.keys(lobbies[resolvedLobbyId].participants)) {
         const existing = lobbies[resolvedLobbyId].participants[participantSocketId];
         const sameRejoiningSession =
@@ -421,29 +488,63 @@ io.on("connection", (socket: Socket) => {
           existing.sessionId === resolvedSessionId;
         const sameUserGhost =
           existing.userId === resolvedUserId && existing.disconnectedAt !== null;
-        if (sameRejoiningSession || sameUserGhost) {
+        if (sameRejoiningSession) {
+          sessionMatch = {
+            name: existing.name,
+            po: existing.po,
+            estimate: existing.estimate,
+          };
+          delete lobbies[resolvedLobbyId].participants[participantSocketId];
+        } else if (sameUserGhost) {
+          ghostMatch = ghostMatch ?? {
+            name: existing.name,
+            po: existing.po,
+            estimate: existing.estimate,
+          };
           delete lobbies[resolvedLobbyId].participants[participantSocketId];
         }
       }
+      carried = sessionMatch ?? ghostMatch;
     }
 
     lobbies[resolvedLobbyId].participants[socket.id] = {
       id: socket.id,
       userId: resolvedUserId,
       sessionId: resolvedSessionId,
-      name: "Anonymous",
-      estimate: null,
-      po: false,
+      name: carried?.name ?? "Anonymous",
+      estimate: carried?.estimate ?? null,
+      po: carried?.po ?? false,
       disconnectedAt: null,
     };
     broadcast(resolvedLobbyId);
     reply(resolvedLobbyId);
   });
 
-  socket.on("heartbeat", () => {
+  socket.on("heartbeat", (ack: unknown) => {
     const check = socketLimiter.isAllowed(socket.id, "heartbeat", 60, 60_000);
+    if (check.allowed) {
+      lastHeartbeats.set(socket.id, Date.now());
+    }
+    // Always acknowledge, even when rate limited: the client treats a missing
+    // ack as a dead connection and would drop a healthy socket.
+    if (typeof ack === "function") (ack as () => void)();
+  });
+
+  /**
+   * Tab visibility. A backgrounded tab stays connected but is displayed as
+   * "away" and no longer blocks the Reveal.
+   */
+  socket.on("visibility", (lobbyId: unknown, visible: unknown) => {
+    const check = socketLimiter.isAllowed(socket.id, "visibility", 60, 60_000);
     if (!check.allowed) return;
-    lastHeartbeats.set(socket.id, Date.now());
+    const id = lobbyId as string;
+    if (!id || !lobbies[id] || !lobbies[id].participants[socket.id]) return;
+    if (visible) {
+      socketAwayAt.delete(socket.id);
+    } else {
+      socketAwayAt.set(socket.id, Date.now());
+    }
+    broadcast(id);
   });
 
   socket.on("setName", (lobbyId: unknown, name: unknown) => {
@@ -503,8 +604,9 @@ io.on("connection", (socket: Socket) => {
     if (!id || !lobbies[id] || !lobbies[id].participants[socket.id]) return;
     const lobby = lobbies[id];
     if (lobby.revealed) return;
+    // Offline and backgrounded participants never block the round.
     const activeNonPO = Object.values(lobby.participants).filter(
-      (p) => !p.po && p.disconnectedAt === null,
+      (p) => !p.po && isActiveParticipant(p),
     );
     if (activeNonPO.length === 0 || !activeNonPO.every((p) => p.estimate !== null)) return;
     lobby.revealed = true;
@@ -553,14 +655,19 @@ export {
   runHeartbeatCleanup,
   runPeriodicCleanup,
   getLobbyState,
+  getPresence,
+  isActiveParticipant,
   lastHeartbeats,
   socketLobbies,
+  socketAwayAt,
   ALLOWED_ESTIMATES,
   MAX_PARTICIPANTS,
   HEARTBEAT_INTERVAL,
   HEARTBEAT_TIMEOUT,
+  AWAY_HEARTBEAT_TIMEOUT,
   GHOST_TIMEOUT,
   type LobbyState,
+  type Presence,
 };
 
 if (process.env.AUTO_START !== "false") {

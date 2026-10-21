@@ -10,6 +10,7 @@ interface MockSocket {
   on: ReturnType<typeof vi.fn>;
   disconnect: ReturnType<typeof vi.fn>;
   connect: ReturnType<typeof vi.fn>;
+  timeout: ReturnType<typeof vi.fn>;
   _listeners: Record<string, Function[]>;
   _callbacks: Record<string, Function>;
   trigger: (event: string, ...args: any[]) => void;
@@ -35,6 +36,12 @@ function createMockSocket(): MockSocket {
     }),
     disconnect: vi.fn(),
     connect: vi.fn(),
+    // socket.timeout(ms).emit(...) — behaves like a plain emit, the ack is
+    // stored so tests can trigger it (with an error to simulate a timeout).
+    timeout: vi.fn(() => ({
+      emit: (event: string, ...args: any[]) =>
+        (socket.emit as (...a: any[]) => void)(event, ...args),
+    })),
     _listeners: listeners,
     _callbacks: callbacks,
     trigger(event: string, ...args: any[]) {
@@ -101,12 +108,16 @@ describe("Frontend", () => {
 
     (globalThis as any).alert = vi.fn();
 
+    // Deterministic backoff: jitter factor 1 → 1s, 2s, 4s, 8s, 15s…
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
     // Set up the DOM template so Vue can compile it
     document.body.innerHTML = appTemplate;
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.restoreAllMocks();
     vi.useRealTimers();
     document.body.innerHTML = "";
     Object.defineProperty(window, "location", {
@@ -681,9 +692,10 @@ describe("Frontend", () => {
     mockSocket.triggerCallback("join", "lobby-1");
     await flushPromises();
 
-    // Wait for one heartbeat interval
+    // Wait for one heartbeat interval — the heartbeat carries an ack callback
+    // so the client can detect a half-open connection.
     await new Promise((r) => setTimeout(r, 5100));
-    expect(mockSocket.emit).toHaveBeenCalledWith("heartbeat");
+    expect(mockSocket.emit).toHaveBeenCalledWith("heartbeat", expect.any(Function));
   });
 
   it("clears heartbeat interval on unmount", async () => {
@@ -735,12 +747,13 @@ describe("Frontend", () => {
     await flushPromises();
 
     expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
-    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+    expect(wrapper.find(".reconnecting-banner").text()).toMatch(/in \ds/);
     expect((wrapper.vm as any).disconnected).toBe(true);
     wrapper.unmount();
   });
 
-  it("counts down to the next automatic reconnect attempt", async () => {
+  it("retries with exponential backoff while the connection stays down", async () => {
+    vi.useFakeTimers();
     const appOptions = await loadAppOptions();
     const wrapper = mount(appOptions);
     await flushPromises();
@@ -753,16 +766,50 @@ describe("Frontend", () => {
 
     window.dispatchEvent(new Event("offline"));
     await flushPromises();
-    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
 
-    await new Promise((r) => setTimeout(r, 1100));
+    // First attempt after ~1s
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 1s");
+    vi.advanceTimersByTime(1_100);
     await flushPromises();
+    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 2s");
+
+    // Second attempt after another ~2s
+    vi.advanceTimersByTime(2_100);
+    await flushPromises();
+    expect(connectSpy).toHaveBeenCalledTimes(2);
     expect(wrapper.find(".reconnecting-banner").text()).toContain("in 4s");
 
-    await new Promise((r) => setTimeout(r, 4100));
+    // Third attempt after another ~4s
+    vi.advanceTimersByTime(4_100);
+    await flushPromises();
+    expect(connectSpy).toHaveBeenCalledTimes(3);
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 8s");
+
+    wrapper.unmount();
+  });
+
+  it("counts down to the next automatic reconnect attempt", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 1s");
+
+    vi.advanceTimersByTime(1_100);
     await flushPromises();
     expect(connectSpy).toHaveBeenCalled();
-    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+    // The next attempt is scheduled with double the delay
+    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 2s");
 
     wrapper.unmount();
   });
@@ -806,7 +853,7 @@ describe("Frontend", () => {
     expect(banner.find("button").exists()).toBe(false);
     expect(banner.text()).toContain("offline");
     expect(banner.text()).toContain("Retrying");
-    expect(banner.text()).toContain("in 5s");
+    expect(banner.text()).toMatch(/in \ds/);
     wrapper.unmount();
   });
 
@@ -835,6 +882,272 @@ describe("Frontend", () => {
       expect.stringMatching(/^[0-9a-f-]{36}$/i),
       expect.any(Function),
     );
+  });
+
+  it("reports the tab visibility to the server after joining", async () => {
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    expect(mockSocket.emit).toHaveBeenCalledWith("visibility", "lobby-1", true);
+  });
+
+  it("reports visibility changes when the tab goes to the background and back", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    (mockSocket.emit as ReturnType<typeof vi.fn>).mockClear();
+
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    expect(mockSocket.emit).toHaveBeenCalledWith("visibility", "lobby-1", false);
+
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+    expect(mockSocket.emit).toHaveBeenCalledWith("visibility", "lobby-1", true);
+
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  it("probes the connection immediately when the tab comes back to the foreground", async () => {
+    let visibility: DocumentVisibilityState = "hidden";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    (mockSocket.emit as ReturnType<typeof vi.fn>).mockClear();
+
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+
+    // The server may have dropped us while the tab was throttled — probe now
+    // instead of waiting for the next 5s heartbeat.
+    expect(mockSocket.emit).toHaveBeenCalledWith("heartbeat", expect.any(Function));
+
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  it("reconnects immediately when the tab becomes visible while disconnected", async () => {
+    let visibility: DocumentVisibilityState = "hidden";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibility,
+    });
+
+    const appOptions = await loadAppOptions();
+    mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.connected = false;
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await flushPromises();
+
+    expect(connectSpy).toHaveBeenCalled();
+
+    delete (document as unknown as Record<string, unknown>).visibilityState;
+  });
+
+  it("arms the offline banner when the very first connection attempt fails", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    const connectSpy = vi.fn();
+    mockSocket.connect = connectSpy;
+
+    // A failed initial connect never emits "disconnect"
+    mockSocket.trigger("connect_error", new Error("network down"));
+    await flushPromises();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+
+    vi.advanceTimersByTime(5_100);
+    await flushPromises();
+
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
+    expect(connectSpy).toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
+  it("treats a missing heartbeat ack as a dead connection", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const disconnectSpy = mockSocket.disconnect as ReturnType<typeof vi.fn>;
+    disconnectSpy.mockClear();
+
+    // Let the heartbeat interval send its first probe
+    vi.advanceTimersByTime(5_100);
+    await flushPromises();
+
+    // The server never answers the heartbeat — half-open transport
+    mockSocket.triggerCallback("heartbeat", new Error("timeout"));
+    await flushPromises();
+
+    expect(disconnectSpy).toHaveBeenCalled();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
+  });
+
+  it("does not treat a successful heartbeat ack as a dead connection", async () => {
+    vi.useFakeTimers();
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    const disconnectSpy = mockSocket.disconnect as ReturnType<typeof vi.fn>;
+    disconnectSpy.mockClear();
+
+    vi.advanceTimersByTime(5_100);
+    await flushPromises();
+
+    mockSocket.triggerCallback("heartbeat", null);
+    await flushPromises();
+
+    expect(disconnectSpy).not.toHaveBeenCalled();
+    expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
+  });
+
+  it("disables the value buttons while offline", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        {
+          id: "mock-socket-id",
+          name: "Alice",
+          estimate: null,
+          po: false,
+          connected: true,
+          presence: "active",
+        },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+
+    const buttons = wrapper.findAll(".actions button");
+    expect(buttons.length).toBeGreaterThan(0);
+    expect(buttons.every((b) => !(b.element as HTMLButtonElement).disabled)).toBe(true);
+
+    window.dispatchEvent(new Event("offline"));
+    await flushPromises();
+
+    expect(
+      wrapper.findAll(".actions button").every((b) => (b.element as HTMLButtonElement).disabled),
+    ).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("shows a participant with a backgrounded tab as '(tab in background)'", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        {
+          id: "other-id",
+          name: "Bob",
+          estimate: null,
+          po: false,
+          connected: true,
+          presence: "away",
+        },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+
+    const card = wrapper.find(".card");
+    expect(card.classes()).toContain("away");
+    expect(card.classes()).not.toContain("ghost");
+    expect(card.find(".name").text()).toContain("(tab in background)");
+    expect(card.find(".name").text()).not.toContain("(offline)");
+  });
+
+  it("keeps '(offline)' for participants whose socket is gone", async () => {
+    const appOptions = await loadAppOptions();
+    const wrapper = mount(appOptions);
+    await flushPromises();
+
+    mockSocket.triggerCallback("join", "lobby-1");
+    await flushPromises();
+
+    mockSocket.trigger("state", {
+      lobbyId: "lobby-1",
+      id: "lobby-1",
+      revealed: false,
+      participants: [
+        {
+          id: "other-id",
+          name: "Bob",
+          estimate: null,
+          po: false,
+          connected: false,
+          presence: "offline",
+        },
+      ],
+      canReveal: false,
+    });
+    await flushPromises();
+
+    const card = wrapper.find(".card");
+    expect(card.classes()).toContain("ghost");
+    expect(card.find(".name").text()).toContain("(offline)");
   });
 
   it("renders ghost participants with a ghost class", async () => {
@@ -877,7 +1190,7 @@ describe("Frontend", () => {
     await flushPromises();
 
     expect(wrapper.find(".reconnecting-banner").exists()).toBe(true);
-    expect(wrapper.find(".reconnecting-banner").text()).toContain("in 5s");
+    expect(wrapper.find(".reconnecting-banner").text()).toMatch(/in \ds/);
     expect((wrapper.vm as any).disconnected).toBe(true);
     wrapper.unmount();
   });
@@ -987,7 +1300,7 @@ describe("Frontend", () => {
     window.dispatchEvent(new Event("offline"));
     await flushPromises();
 
-    // Tick halfway through the 5s window
+    // The retry loop runs while the connection is down
     vi.advanceTimersByTime(3_000);
     await flushPromises();
 
@@ -999,6 +1312,7 @@ describe("Frontend", () => {
     expect(wrapper.find(".reconnecting-banner").exists()).toBe(false);
 
     // 7s after the recovery — there should be no second cycle.
+    connectSpy.mockClear();
     vi.advanceTimersByTime(7_000);
     await flushPromises();
     expect(connectSpy).not.toHaveBeenCalled();
@@ -1023,9 +1337,9 @@ describe("Frontend", () => {
     window.dispatchEvent(new Event("offline"));
     await flushPromises();
 
-    // 5.5s: the first interval has fired exactly once, the duplicate
-    // dispatches must not have queued more.
-    vi.advanceTimersByTime(5_500);
+    // Duplicate dispatches must not queue more intervals: after one backoff
+    // step exactly one attempt has been made.
+    vi.advanceTimersByTime(1_100);
     await flushPromises();
 
     expect(connectSpy).toHaveBeenCalledTimes(1);
@@ -1121,7 +1435,7 @@ describe("Frontend", () => {
     wrapper2.unmount();
   });
 
-  it("banner copy is exactly 'You are offline. Retrying to reconnect in 4s…' after one tick", async () => {
+  it("banner copy is exactly 'You are offline. Retrying to reconnect in 1s…' on the first attempt", async () => {
     vi.useFakeTimers();
     const appOptions = await loadAppOptions();
     const wrapper = mount(appOptions);
@@ -1133,13 +1447,13 @@ describe("Frontend", () => {
     window.dispatchEvent(new Event("offline"));
     await flushPromises();
     expect(wrapper.find(".reconnecting-banner").text()).toBe(
-      "You are offline. Retrying to reconnect in 5s…",
+      "You are offline. Retrying to reconnect in 1s…",
     );
 
     vi.advanceTimersByTime(1_100);
     await flushPromises();
     expect(wrapper.find(".reconnecting-banner").text()).toBe(
-      "You are offline. Retrying to reconnect in 4s…",
+      "You are offline. Retrying to reconnect in 2s…",
     );
 
     wrapper.unmount();
