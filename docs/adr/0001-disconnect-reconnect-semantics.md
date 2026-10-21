@@ -51,18 +51,29 @@ on a fresh socket → the old one is pruned).
 2. `canReveal` and `reveal` ignore ghosts. A single dropped connection
    no longer blocks the round.
 3. `runPeriodicCleanup` prunes ghosts older than `GHOST_TIMEOUT`.
-4. `HEARTBEAT_TIMEOUT = 7 s` (5 s client heartbeat cadence → ghost
-   visible to peers within ~7-12 s).
+4. `HEARTBEAT_TIMEOUT = 15 s` for foreground tabs, `90 s` for
+   backgrounded tabs (see ADR-0003). A real disconnect still ghosts
+   immediately; the heartbeat timeout only covers silent deaths.
 5. `getLobbyState` projects the public fields explicitly
-   (`{ id, name, po, connected, estimate }`) so `userId`,
+   (`{ id, name, po, connected, presence, estimate }`) so `userId`,
    `sessionId`, and `disconnectedAt` never leak to clients.
 6. On `join`, the server prunes:
    - Any participant with matching `userId` + matching `sessionId`
      (active or ghost — covers in-tab refresh).
    - Any **ghost** with matching `userId` (covers cross-tab/session
      where the same user came back, possibly from a different tab).
+     The pruned participant's `name`, `po` and `estimate` are carried
+     over to the new entry (ADR-0003).
 
 ### Client-side reconnect
+
+> **Extended by [ADR-0003](0003-presence-and-reconnect-reliability.md):**
+> the fixed 5 s retry cadence described below was replaced by a single
+> exponential backoff loop (1 s → 15 s, ±20 % jitter), the client
+> disables socket.io's own auto-reconnect, and a backgrounded tab is
+> reported as `away` instead of turning into a ghost. The visibility
+> contract of this ADR (banner copy, no manual button, rejoin on
+> `connect`) is unchanged.
 
 1. The yellow banner reads **"You are offline. Retrying to reconnect
    in Xs…"** with a live countdown. There is **no manual Reconnect
@@ -73,16 +84,19 @@ on a fresh socket → the old one is pruned).
      the OS didn't notice.
 3. On `offline`, the client **calls `socket.disconnect()`** so emits
    from button clicks don't enqueue against the stale transport.
-4. The countdown calls `socket.connect()` every 5 s and resets to 5.
+4. The countdown calls `socket.connect()` on every attempt and resets
+   to the next backoff delay.
 5. On `online`, the client proactively calls `socket.connect()`
    immediately, then keeps the countdown loop running until the real
    socket `connect` event arrives.
 6. The actual `connect` event clears the banner and re-joins the
    lobby. `online` alone does **not** clear the banner — only the
    real `connect` does — so the rejoin path always runs.
-7. The page is intentionally **quiet at load** when
-   `navigator.onLine === false`. The 5 s socket-disconnect fallback
-   covers that path.
+7. A failed initial connect arms the 5 s banner too, so a load with no
+   network is no longer silent forever.
+8. The page stays quiet for the first 5 s after load even when
+   `navigator.onLine === false`; after that the banner appears and the
+   retry loop takes over.
 
 ### Persistence model
 
@@ -132,12 +146,13 @@ and are documented in **Identity layering** above.
 
 **Trade-offs (deliberate)**
 
-- **False-positive ghosts** — 5 s heartbeat + 7 s timeout means a
-  single delayed heartbeat (~1-2 s blip) can briefly mark a healthy
-  client as a ghost. Accepted for the visibility benefit.
-- **Tight heartbeat** — a real connection blip lasting >7 s will mark
-  the user as offline for up to 60 s of grace plus 7-12 s
-  re-detection. Documented as a known trade-off.
+- **False-positive ghosts are no longer a concern** — ADR-0003 raised
+  the foreground timeout to 15 s and gave background tabs a 90 s
+  budget, so a delayed heartbeat no longer turns a healthy client into
+  a ghost.
+- **Slower silent-death detection** — a client that dies without a
+  FIN is shown offline after ~15-20 s (was ~7-12 s). Real disconnects
+  still ghost immediately.
 - **State redaction** — requires explicit field projection in
   `getLobbyState` (not `...p` spread). The function is exported
   specifically so the redaction is asserted in tests.
@@ -147,16 +162,15 @@ and are documented in **Identity layering** above.
 
 ## Implementation references
 
-- `src/server.ts:294-313` — `getLobbyState` explicit field projection.
-- `src/server.ts:204-220` — `markParticipantGhosts`.
-- `src/server.ts:415-428` — join handler prune rules.
-- `src/server.ts:294` — `GHOST_TIMEOUT` constant.
-- `public/app.ts:97-124` — countdown loop.
-- `public/app.ts:174-184` — `offline` / `online` handlers.
-- `public/app.ts:3-13` / `15-25` — `getUserId` / `getSessionId`.
-- `public/app.ts:72-73` — preference seeds (`qp-name`, `qp-user-po`) read in `data()`.
-- `public/app.ts:190-201` — `state` handler mirror for `qp-user-po`.
-- `public/app.ts:240-244` — `updateName` optimistic write for `qp-name`.
+- `src/server.ts` — `getLobbyState` explicit field projection,
+  `markParticipantGhosts`, the join-handler prune rules, and
+  `GHOST_TIMEOUT`.
+- `src/server.ts` — presence, heartbeat timeouts and rejoin carry-over
+  now live in ADR-0003.
+- `public/app.ts` — the retry loop (`startReconnectCountdown`),
+  `offline` / `online` handlers, `getUserId` / `getSessionId`, the
+  preference seeds in `data()` and the `state` mirror for
+  `qp-user-po`.
 - `tests/server.test.ts` — `Connection Status`, `Public state
 redaction`, `join payload compatibility`, `Multi-tab refresh flow`
   describe blocks.
