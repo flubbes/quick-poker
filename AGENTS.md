@@ -75,22 +75,26 @@ Notes:
 
 ### Disconnect Handling
 
-For the full design rationale and trade-offs, see [docs/adr/0001-disconnect-reconnect-semantics.md](docs/adr/0001-disconnect-reconnect-semantics.md). The contract:
+For the full design rationale and trade-offs, see
+[docs/adr/0001-disconnect-reconnect-semantics.md](docs/adr/0001-disconnect-reconnect-semantics.md) and
+[docs/adr/0003-presence-and-reconnect-reliability.md](docs/adr/0003-presence-and-reconnect-reliability.md). The contract:
 
 1. The client shows a yellow **You are offline. Retrying to reconnect in Xs…** countdown banner as soon as it has reason to believe the network is down — whichever fires first:
    - The browser fires the `offline` event (e.g. Chrome dev-tools "Offline" toggle, OS losing Wi-Fi). This is the fast path and bypasses the 5 s grace period below.
    - The socket fires `disconnect` and stays disconnected for **5 seconds**.
+   - A **failed initial connect** also arms the banner after 5 s (it never emits `disconnect`).
 2. The banner is informational only — the client never exposes a manual **Reconnect** button. Reconnection runs automatically in the background.
-3. The page is intentionally **quiet at load** when `navigator.onLine === false` — the 5 s socket-disconnect fallback covers it.
-4. On the browser's `offline` event, the client forces the socket into a disconnected state locally so button clicks do not enqueue against a stale transport.
-5. While offline, the client calls `socket.connect()` every 5 seconds and the banner counts down to the next attempt.
-6. On the browser's `online` event the client proactively calls `socket.connect()` immediately, then continues the countdown loop until the actual socket `connect` event arrives.
-7. When the socket reconnects, the client automatically re-joins the lobby and restores the name (`qp-name`) and PO status (`qp-user-po`) from `localStorage` — see [ADR-0001 §Persistence model](docs/adr/0001-disconnect-reconnect-semantics.md#persistence-model) for the read-on-mount / write-on-state contract. The banner is cleared by the actual `connect` event, not by `online`, so the rejoin path always runs.
-8. The client sends a persistent `qp-user-id` (localStorage) plus a per-tab `qp-session-id` (sessionStorage). On join, the server removes stale participants from the same user/session even before the heartbeat timeout marks the old socket as a ghost; active participants from other tabs with the same `qp-user-id` are kept.
+3. On the browser's `offline` event, the client forces the socket into a disconnected state locally so button clicks do not enqueue against a stale transport.
+4. The client runs **one** retry loop (`reconnection: false` on socket.io) with exponential backoff **1 s → 2 s → 4 s → 8 s → 15 s cap, ±20 % jitter**. The banner counts down to the real next attempt.
+5. On the browser's `online` event, and whenever the tab becomes visible again, the client proactively calls `socket.connect()` immediately, then continues the countdown loop until the actual socket `connect` event arrives.
+6. When the socket reconnects, the client automatically re-joins the lobby and the server carries the previous `name`, PO status and **estimate** over (see ADR-0003) — a network blip does not lose a vote. The name (`qp-name`) and PO status (`qp-user-po`) still come from `localStorage`; see [ADR-0001 §Persistence model](docs/adr/0001-disconnect-reconnect-semantics.md#persistence-model). The banner is cleared by the actual `connect` event, not by `online`, so the rejoin path always runs.
+7. The client sends a persistent `qp-user-id` (localStorage) plus a per-tab `qp-session-id` (sessionStorage). On join, the server removes stale participants from the same user/session even before the heartbeat timeout marks the old socket as a ghost; active participants from other tabs with the same `qp-user-id` are kept.
+8. Every participant has a **presence**: `active` (connected, tab visible), `away` (connected, tab in the background) or `offline` (ghost). The client reports tab visibility with the `visibility` event on `visibilitychange` and after joining.
 9. On the server, disconnected participants are kept in the lobby as **ghosts** (`connected: false`) for `GHOST_TIMEOUT` (60s) so others can see who dropped off.
-10. The server uses a **7 s heartbeat timeout** (`HEARTBEAT_TIMEOUT`): with the 5 s client heartbeat cadence, peers should see the ghost within ~7-12 s of a real disconnect. A single delayed heartbeat can briefly mark a healthy client as a ghost — acceptable tradeoff for faster visibility.
-11. Disconnected non-PO participants are excluded from the **Reveal** check (they cannot estimate).
-12. Ghost participants are rendered with reduced opacity and a strikethrough name (`(offline)`) on other clients' screens.
+10. The server uses **`HEARTBEAT_TIMEOUT` = 15 s** for foreground tabs and **`AWAY_HEARTBEAT_TIMEOUT` = 90 s** for backgrounded tabs (browsers throttle hidden-tab timers to ~1 beat/minute). A real disconnect still ghosts immediately via the transport; the timeout only covers silent deaths.
+11. The client heartbeat (5 s cadence) is **acknowledged** by the server. A missing ack after **8 s** proves the link is half-open and the client forces a reconnect.
+12. **`offline` and `away` participants never block Reveal or Reset** — only `active` non-PO participants have to have estimated. Their estimate still counts if they already cast one.
+13. Ghost participants are rendered with reduced opacity and a strikethrough name (`(offline)`); backgrounded participants show `(tab in background)` on a dashed card.
 
 ### Product Owner (PO) Role
 
@@ -139,6 +143,11 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 - **PO Role**: self-assignment, exclusion from reveal condition, server-side estimate blocking
 - **State Redaction**: hidden votes show `✓`/`?`, own estimate visible, no raw value leakage before reveal
 - **Connection Status**: ghost participants marked `connected: false`, `canReveal` ignores ghosts, grace-period cleanup via `GHOST_TIMEOUT`
+- **Presence**: `active` / `away` / `offline` projection, `visibility` event round-trip, backgrounded participants stay connected, a delayed background heartbeat does not ghost them, away timeout drops them
+- **Away/Offline Gating**: backgrounded and offline participants do not block Reveal or Reset
+- **Heartbeat**: timestamp refresh, rate limit, ack callback, presence-aware timeout
+- **Rejoin State Carry-Over**: name, PO status and estimate survive a reconnect of the same session or user
+- **Reconnect Loop**: exponential backoff (1 s → 15 s, jitter), 8 s heartbeat-ack timeout forces a reconnect, tab becoming visible probes immediately
 - **Rejoin Identity**: stable `qp-user-id` in localStorage plus per-tab `qp-session-id` in sessionStorage; stale participants from the same user/session are pruned on join; active participants from other tabs with the same `qp-user-id` are kept
 - **Browser Offline/Online Signals**: `offline` shows banner immediately with a retry countdown, `online` proactively calls `socket.connect()`
 - **Name Sanitization**: HTML metacharacter stripping, 15-char truncation
