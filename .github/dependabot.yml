@@ -17,9 +17,6 @@ updates:
           - "minor"
           - "patch"
     ignore:
-      # Deliberately deferred majors — see reviews/todo.md.
-      - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
       # The runtime is pinned to the 24.x line by ADR-0002, so the types must
       # stay on the same major.
       - dependency-name: "@types/node"
