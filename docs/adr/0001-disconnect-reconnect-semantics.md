@@ -172,6 +172,6 @@ and are documented in **Identity layering** above.
   preference seeds in `data()` and the `state` mirror for
   `qp-user-po`.
 - `tests/server.test.ts` — `Connection Status`, `Public state
-redaction`, `join payload compatibility`, `Multi-tab refresh flow`
+  redaction`, `join payload compatibility`, `Multi-tab refresh flow`
   describe blocks.
 - `tests/frontend.test.ts` — `DISCONNECT HANDLING` block.
