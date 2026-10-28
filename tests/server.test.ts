@@ -381,7 +381,7 @@ describe("Estimation Flow", () => {
     await disconnect(client);
   });
 
-  it("canReveal is false when not all non-PO participants have estimated", async () => {
+  it("canReveal is true when not all non-PO participants have estimated", async () => {
     const clientA = createSocket();
     await connect(clientA);
     const lobbyId = await join(clientA);
@@ -390,10 +390,10 @@ describe("Estimation Flow", () => {
     await connect(clientB);
     await join(clientB, lobbyId as string);
 
-    // Nobody estimated yet
+    // Only A estimates; B chooses not to.
     clientA.emit("estimate", lobbyId, 5);
     const state = await waitForState(clientA);
-    expect(state?.canReveal).toBe(false);
+    expect(state?.canReveal).toBe(true);
 
     await disconnect(clientA);
     await disconnect(clientB);
@@ -536,24 +536,19 @@ describe("PO Role", () => {
     await disconnect(client);
   });
 
-  it("excludes POs from the reveal condition", async () => {
+  it("allows reveal in a PO-only lobby without estimates", async () => {
     const poClient = createSocket();
     await connect(poClient);
     const lobbyId = await join(poClient);
     poClient.emit("setPO", lobbyId, true);
-    await waitForState(poClient);
-
-    const normalClient = createSocket();
-    await connect(normalClient);
-    await join(normalClient, lobbyId as string);
-
-    // Only the non-PO needs to estimate for reveal to be possible
-    normalClient.emit("estimate", lobbyId, 5);
-    const state = await waitForState(normalClient);
+    const state = await waitForState(poClient);
     expect(state?.canReveal).toBe(true);
 
+    poClient.emit("reveal", lobbyId);
+    const revealed = await waitForState(poClient);
+    expect(revealed?.revealed).toBe(true);
+
     await disconnect(poClient);
-    await disconnect(normalClient);
   });
 
   it("prevents POs from estimating server-side", async () => {
@@ -855,10 +850,10 @@ describe("Connection Status", () => {
     void clientAId;
   });
 
-  it("canReveal is recomputed correctly after a same-session self-prune", async () => {
+  it("keeps reveal available after a same-session self-prune", async () => {
     // Two active non-POs, neither has estimated. A's tab "refreshes" -
     // the old A entry is pruned and a fresh A is added. canReveal should
-    // stay false until somebody estimates.
+    // stay true regardless of estimates.
     const userId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
     const sessionId = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 
@@ -877,13 +872,12 @@ describe("Connection Status", () => {
     const statePromise = waitForState(a2);
     await join(a2, lobbyId as string, userId, sessionId);
     const stateAfterRefresh = await statePromise;
-    expect(stateAfterRefresh?.canReveal).toBe(false);
+    expect(stateAfterRefresh?.canReveal).toBe(true);
 
-    // The new A tab estimates; B is still active and un-estimated, so
-    // canReveal should still be false.
+    // The new A tab estimates; B is still active and un-estimated.
     a2.emit("estimate", lobbyId, 3);
     const stateAfterEstimate = await waitForState(a2);
-    expect(stateAfterEstimate?.canReveal).toBe(false);
+    expect(stateAfterEstimate?.canReveal).toBe(true);
 
     // B estimates too — now both active non-POs have estimated.
     b.emit("estimate", lobbyId, 5);
@@ -1370,7 +1364,7 @@ describe("Authorization & Security Regressions", () => {
     await disconnect(attacker);
   });
 
-  it("does not allow reveal before all non-PO participants have estimated", async () => {
+  it.each([null, 5])("allows reveal with a missing estimate when A voted %s", async (estimate) => {
     const clientA = createSocket();
     await connect(clientA);
     const lobbyId = await join(clientA);
@@ -1379,13 +1373,20 @@ describe("Authorization & Security Regressions", () => {
     await connect(clientB);
     await join(clientB, lobbyId as string);
 
-    // Only A estimates
-    clientA.emit("estimate", lobbyId, 5);
-    await waitForState(clientA);
+    // B skips voting; A may skip too.
+    if (estimate !== null) {
+      clientA.emit("estimate", lobbyId, estimate);
+      await waitForState(clientA);
+    }
+
+    expect(getLobbyState(lobbyId as string)?.canReveal).toBe(true);
 
     clientA.emit("reveal", lobbyId);
-    await new Promise((r) => setTimeout(r, 100));
-    expect(lobbies[lobbyId as string].revealed).toBe(false);
+    const state = await waitForState(clientA);
+    expect(state?.revealed).toBe(true);
+    expect(state?.canReveal).toBe(false);
+    expect(state?.participants.find((p) => p.id === clientA.id)?.estimate).toBe(estimate);
+    expect(state?.participants.find((p) => p.id === clientB.id)?.estimate).toBeNull();
 
     await disconnect(clientA);
     await disconnect(clientB);

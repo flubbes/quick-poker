@@ -68,7 +68,7 @@ Notes:
 2. Until someone clicks **Reveal**, all cards stay hidden.
 3. The first person to estimate can still change their mind until reveal.
 4. Everyone can change their estimate freely before reveal — no one can see others' choices.
-5. When **all active (connected) non-PO participants have estimated**, the **Reveal** button becomes active.
+5. The **Reveal** button is always clickable. Any participant can reveal, even when some or all participants have not estimated.
 6. When **Reveal** is pressed:
    - All cards are revealed.
    - No re-estimation is possible.
@@ -95,14 +95,14 @@ For the full design rationale and trade-offs, see
 9. On the server, disconnected participants are kept in the lobby as **ghosts** (`connected: false`) for `GHOST_TIMEOUT` (60s) so others can see who dropped off.
 10. The server uses **`HEARTBEAT_TIMEOUT` = 15 s** for foreground tabs and **`AWAY_HEARTBEAT_TIMEOUT` = 90 s** for backgrounded tabs (browsers throttle hidden-tab timers to ~1 beat/minute). A real disconnect still ghosts immediately via the transport; the timeout only covers silent deaths.
 11. The client heartbeat (5 s cadence) is **acknowledged** by the server. A missing ack after **8 s** proves the link is half-open and the client forces a reconnect.
-12. **`offline` and `away` participants never block Reveal or Reset** — only `active` non-PO participants have to have estimated. Their estimate still counts if they already cast one.
+12. **Presence never blocks Reveal or Reset.** Estimates from `offline` and `away` participants still count if they already cast one.
 13. Ghost participants are rendered with reduced opacity and a strikethrough name (`(offline)`); backgrounded participants show `(tab in background)` on a dashed card.
 
 ### Product Owner (PO) Role
 
 1. A user can flag themselves as PO via the settings modal.
-2. POs are **not** counted toward the group that must estimate.
-3. The Reveal button becomes active based only on non-PO participants.
+2. POs cannot submit estimates.
+3. POs can reveal at any time, including in PO-only lobbies.
 
 ### User Settings
 
@@ -141,10 +141,10 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 `tests/server.test.ts` covers:
 
 - **Lobby Lifecycle**: creation, joining, UUID validation, prototype-pollution resistance, max-participants cap, disconnect cleanup
-- **Estimation Flow**: allowed values, value whitelist, changing mind before reveal, reveal preconditions, reset behavior, multi-round support
-- **PO Role**: self-assignment, exclusion from reveal condition, server-side estimate blocking
+- **Estimation Flow**: allowed values, value whitelist, changing mind before reveal, optional estimates, reset behavior, multi-round support
+- **PO Role**: self-assignment, reveal in PO-only lobbies, server-side estimate blocking
 - **State Redaction**: hidden votes show `✓`/`?`, own estimate visible, no raw value leakage before reveal
-- **Connection Status**: ghost participants marked `connected: false`, `canReveal` ignores ghosts, grace-period cleanup via `GHOST_TIMEOUT`
+- **Connection Status**: ghost participants marked `connected: false`, Reveal stays available across reconnects, grace-period cleanup via `GHOST_TIMEOUT`
 - **Presence**: `active` / `away` / `offline` projection, `visibility` event round-trip, backgrounded participants stay connected, a delayed background heartbeat does not ghost them, away timeout drops them
 - **Away/Offline Gating**: backgrounded and offline participants do not block Reveal or Reset
 - **Heartbeat**: timestamp refresh, rate limit, ack callback, presence-aware timeout
@@ -154,7 +154,7 @@ Tests use **Vitest** + **Socket.IO client** + **Supertest**. They run against th
 - **Browser Offline/Online Signals**: `offline` shows banner immediately with a retry countdown, `online` proactively calls `socket.connect()`
 - **Name Sanitization**: HTML metacharacter stripping, 15-char truncation
 - **Rate Limiting**: join, estimate, reveal, reset, setName per-socket limits
-- **Authorization / Security Regressions**: non-participants blocked from reveal, reset, setName, setPO, estimate; reveal blocked until all non-POs estimated
+- **Authorization / Security Regressions**: non-participants blocked from reveal, reset, setName, setPO, estimate; participants can reveal with partial or no estimates
 - **Multi-Lobby**: parallel lobby membership
 - **HTTP Layer**: static files, security headers, HTTP 429 rate limit
 - **Utilities**: `isValidLobbyId`, `sanitizeName`, `getClientIp` (with `TRUST_PROXY` env)

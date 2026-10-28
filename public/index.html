@@ -54,11 +54,7 @@
           </button>
         </div>
 
-        <button
-          class="reveal-btn"
-          @click="state.revealed ? reset() : reveal()"
-          :disabled="!state.revealed && !state.canReveal"
-        >
+        <button class="reveal-btn" @click="state.revealed ? reset() : reveal()">
           {{ state.revealed ? 'Reset' : 'Reveal' }}
         </button>
       </main>
