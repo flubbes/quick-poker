@@ -501,28 +501,34 @@ describe("Frontend", () => {
     expect(btn.attributes("disabled")).toBeUndefined();
   });
 
-  it("disables Reveal when not canReveal", async () => {
-    const appOptions = await loadAppOptions();
-    const wrapper = mount(appOptions);
-    await flushPromises();
+  it.each([null, 5])(
+    "keeps Reveal clickable with missing estimates and own vote %s",
+    async (estimate) => {
+      const appOptions = await loadAppOptions();
+      const wrapper = mount(appOptions);
+      await flushPromises();
 
-    mockSocket.triggerCallback("join", "lobby-1");
-    await flushPromises();
+      mockSocket.triggerCallback("join", "lobby-1");
+      await flushPromises();
 
-    mockSocket.trigger("state", {
-      lobbyId: "lobby-1",
-      id: "lobby-1",
-      revealed: false,
-      participants: [
-        { id: "mock-socket-id", name: "Alice", estimate: null, po: false, connected: true },
-      ],
-      canReveal: false,
-    });
-    await flushPromises();
+      mockSocket.trigger("state", {
+        lobbyId: "lobby-1",
+        id: "lobby-1",
+        revealed: false,
+        participants: [
+          { id: "mock-socket-id", name: "Alice", estimate, po: false, connected: true },
+          { id: "other-socket-id", name: "Bob", estimate: "?", po: false, connected: true },
+        ],
+        canReveal: false,
+      });
+      await flushPromises();
 
-    const btn = wrapper.find(".reveal-btn");
-    expect(btn.attributes("disabled")).toBeDefined();
-  });
+      const btn = wrapper.find(".reveal-btn");
+      expect(btn.attributes("disabled")).toBeUndefined();
+      await btn.trigger("click");
+      expect(mockSocket.emit).toHaveBeenCalledWith("reveal", "lobby-1");
+    },
+  );
 
   it("shows Reset when revealed", async () => {
     const appOptions = await loadAppOptions();

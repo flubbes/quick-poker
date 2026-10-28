@@ -76,9 +76,6 @@ interface Lobby {
  * - `active`  — connected and the browser tab is in the foreground
  * - `away`    — connected, but the browser tab is in the background
  * - `offline` — the socket is gone; the participant is kept as a ghost
- *
- * Only `active` participants are required for a Reveal. `away` and
- * `offline` participants never hold the round hostage.
  */
 type Presence = "active" | "away" | "offline";
 
@@ -253,15 +250,6 @@ function getPresence(participant: Participant): Presence {
   return "active";
 }
 
-/**
- * A participant counts towards the Reveal only while it is connected *and*
- * its tab is in the foreground. Offline and backgrounded participants never
- * block the round.
- */
-function isActiveParticipant(participant: Participant): boolean {
-  return participant.disconnectedAt === null && !socketAwayAt.has(participant.id);
-}
-
 function markParticipantGhosts(socket: Socket): string[] {
   const socketId = socket.id;
   const lobbiesToUpdate: string[] = [];
@@ -358,9 +346,7 @@ function getLobbyState(lobbyId: string, viewerSocketId: string | null = null): L
   const lobby = lobbies[lobbyId];
   if (!lobby) return null;
   const rawParticipants = Object.values(lobby.participants);
-  const activeNonPO = rawParticipants.filter((p) => !p.po && isActiveParticipant(p));
-  const canReveal =
-    !lobby.revealed && activeNonPO.length > 0 && activeNonPO.every((p) => p.estimate !== null);
+  const canReveal = !lobby.revealed;
   const participants: ClientParticipant[] = rawParticipants.map((p) => ({
     id: p.id,
     name: p.name,
@@ -532,7 +518,7 @@ io.on("connection", (socket: Socket) => {
 
   /**
    * Tab visibility. A backgrounded tab stays connected but is displayed as
-   * "away" and no longer blocks the Reveal.
+   * "away".
    */
   socket.on("visibility", (lobbyId: unknown, visible: unknown) => {
     const check = socketLimiter.isAllowed(socket.id, "visibility", 60, 60_000);
@@ -604,11 +590,6 @@ io.on("connection", (socket: Socket) => {
     if (!id || !lobbies[id] || !lobbies[id].participants[socket.id]) return;
     const lobby = lobbies[id];
     if (lobby.revealed) return;
-    // Offline and backgrounded participants never block the round.
-    const activeNonPO = Object.values(lobby.participants).filter(
-      (p) => !p.po && isActiveParticipant(p),
-    );
-    if (activeNonPO.length === 0 || !activeNonPO.every((p) => p.estimate !== null)) return;
     lobby.revealed = true;
     logSecurity("info", "Lobby revealed", { lobbyId: id, socketId: socket.id });
     broadcast(id);
@@ -656,7 +637,6 @@ export {
   runPeriodicCleanup,
   getLobbyState,
   getPresence,
-  isActiveParticipant,
   lastHeartbeats,
   socketLobbies,
   socketAwayAt,

@@ -8,8 +8,8 @@ Most planning poker tools try to do more than they need to. I just wanted someth
 
 1. Open the app — a new session is created automatically.
 2. Share the link with your team.
-3. Everyone picks a card (`0, 1, 2, 3, 5, 8, 13, 20, 40`).
-4. Reveal when everyone has estimated.
+3. Pick a card (`0, 1, 2, 3, 5, 8, 13, 20, 40`) if you want to estimate.
+4. Anyone can reveal at any time, even if some or all participants haven't estimated.
 5. Reset and estimate again.
 
 By default the app runs on `http://localhost:3000`.
